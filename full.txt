@@ -5,3 +5,4 @@ switch
 autoreact
 etts
 sodaspy
+ipinfo

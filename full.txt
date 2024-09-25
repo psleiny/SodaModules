@@ -2,3 +2,5 @@ ayanami
 chatgpt
 gemini
 switch
+autoreact
+etts

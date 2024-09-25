@@ -6,3 +6,4 @@ autoreact
 etts
 sodaspy
 ipinfo
+auconv

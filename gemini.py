@@ -48,9 +48,15 @@ class Gemini(loader.Module):
         asyncio.create_task(self.click_for_stats())
 
     def format_response(self, response):
-        """Форматує текст для HTML. Змінює **текст** на <b>текст</b> та * на емодзі на початку рядка"""
+        """Форматує текст для HTML. Змінює **текст** на <b>текст</b> та * на емодзі на початку рядка.
+        Додає підтримку форматування коду через ``` на <pre><code></code></pre>."""
+        
         response = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", response)
-        response = re.sub(r"^\* ", "<emoji document_id=5276288708054624909>◽️</emoji> ", response, flags=re.MULTILINE)
+        
+        response = re.sub(r"^\* ", "⦁ ", response, flags=re.MULTILINE)
+        
+        response = re.sub(r"```(.*?)```", r"<pre><code>\1</code></pre>", response, flags=re.DOTALL)
+        
         return response
 
     @loader.command()
@@ -83,6 +89,3 @@ class Gemini(loader.Module):
         formatted_response = self.format_response(chat_completion.choices[0].message.content)
 
         return await m.edit(self.config['answer_text'].format(question=q, answer=formatted_response), parse_mode="html")
-
-        answer_text = chat_completion.choices[0].message.content
-        return await m.edit(self.config['answer_text'].format(question=q, answer=answer_text), parse_mode="html")

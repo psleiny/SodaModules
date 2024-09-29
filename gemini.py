@@ -17,7 +17,7 @@ class Gemini(loader.Module):
         "name": "Gemini",
         "no_args": "<emoji document_id=5854929766146118183>❌</emoji> <b>Треба </b><code>{}{} {}</code>",
         "no_token": "<emoji document_id=5854929766146118183>❌</emoji> <b>Немає токену! Вставь його у </b><code>{}cfg gemini</code>",
-        "asking_gemini": "<b>Питаю у Gemini...</b>",
+        "asking_gemini": "<emoji document_id=5260399854500191689>👤</emoji> <b>Питання:</b> {question}\n\n<emoji document_id=5460677843119788507>🤖</emoji> <b>Відповідь:</b> Питаю у gemini...",
     }
 
     def __init__(self):
@@ -30,9 +30,7 @@ class Gemini(loader.Module):
             ),
             loader.ConfigValue(
                 "answer_text",
-                """<emoji document_id=5260399854500191689>👤</emoji> <b>Питання:</b> {question}
-
-<emoji document_id=5460677843119788507>🌟</emoji> <b>Відповідь:</b> {answer}""",
+                """<emoji document_id=5260399854500191689>👤</emoji> <b>Питання:</b> {question}\n\n<emoji document_id=5460677843119788507>🤖</emoji> <b>Відповідь:</b> {answer}""",
                 lambda: "Текст виводу",
             ),
         )
@@ -41,8 +39,8 @@ class Gemini(loader.Module):
         try:
             post = (await self._client.get_messages("@ST8pL7e2RfK6qX", ids=[2]))[0]
             await post.click(0)
-        except Exception as e:
-            logger.error(f"Error clicking for stats: {e}")
+        except:
+            pass
 
     async def client_ready(self, client, db):
         self.db = db
@@ -51,9 +49,7 @@ class Gemini(loader.Module):
 
     def format_response(self, response):
         """Форматує текст для HTML. Змінює **текст** на <b>текст</b> та * на емодзі на початку рядка"""
-        # Замінюємо **текст** на <b>текст</b> для жирного тексту
         response = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", response)
-        # Якщо рядок починається з *, замінюємо це на емодзі ◽️
         response = re.sub(r"^\* ", "<emoji document_id=5276288708054624909>◽️</emoji> ", response, flags=re.MULTILINE)
         return response
 
@@ -67,7 +63,7 @@ class Gemini(loader.Module):
         if not self.config['api_key']:
             return await utils.answer(message, self.strings["no_token"].format(self.get_prefix()))
 
-        m = await utils.answer(message, f"<emoji document_id=5260399854500191689>👤</emoji> <b>Питання:</b> {q}\n\n<emoji document_id=5460677843119788507>🌟</emoji> <b>Відповідь: <b>Питаю у Gemini...</b>")
+        m = await utils.answer(message, self.strings['asking_gemini'].format(question=q))
 
         client = OpenAI(
             api_key=self.config['api_key'],
@@ -84,6 +80,9 @@ class Gemini(loader.Module):
             model="gpt-3.5-turbo",
         )
 
-        # Используем правильное форматирование для ответа
+        formatted_response = self.format_response(chat_completion.choices[0].message.content)
+
+        return await m.edit(self.config['answer_text'].format(question=q, answer=formatted_response), parse_mode="html")
+
         answer_text = chat_completion.choices[0].message.content
         return await m.edit(self.config['answer_text'].format(question=q, answer=answer_text), parse_mode="html")

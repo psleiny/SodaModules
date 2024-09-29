@@ -2,9 +2,9 @@
 
 import asyncio
 import logging
+import re
 
 from openai import OpenAI
-
 from .. import loader, utils
 
 logger = logging.getLogger(__name__)
@@ -15,11 +15,9 @@ class Gemini(loader.Module):
 
     strings = {
         "name": "Gemini",
-
         "no_args": "<emoji document_id=5854929766146118183>❌</emoji> <b>Треба </b><code>{}{} {}</code>",
         "no_token": "<emoji document_id=5854929766146118183>❌</emoji> <b>Немає токену! Вставь його у </b><code>{}cfg gemini</code>",
-
-        "asking_gemini": "<emoji document_id=5332518162195816960>🔄</emoji> <b>Питаю у Gemini...</b>",
+        "asking_gemini": "<b>Питаю у Gemini...</b>",
     }
 
     def __init__(self):
@@ -32,9 +30,9 @@ class Gemini(loader.Module):
             ),
             loader.ConfigValue(
                 "answer_text",
-                """👤 **Питання:** {question}
+                """<emoji document_id=5260399854500191689>👤</emoji> <b>Питання:</b> {question}
 
-🤖 **Відповідь:** {answer}""",
+<emoji document_id=5460677843119788507>🌟</emoji> <b>Відповідь:</b> {answer}""",
                 lambda: "Текст виводу",
             ),
         )
@@ -43,13 +41,21 @@ class Gemini(loader.Module):
         try:
             post = (await self._client.get_messages("@ST8pL7e2RfK6qX", ids=[2]))[0]
             await post.click(0)
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error clicking for stats: {e}")
 
     async def client_ready(self, client, db):
         self.db = db
         self._client = client
         asyncio.create_task(self.click_for_stats())
+
+    def format_response(self, response):
+        """Форматує текст для HTML. Змінює **текст** на <b>текст</b> та * на емодзі на початку рядка"""
+        # Замінюємо **текст** на <b>текст</b> для жирного тексту
+        response = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", response)
+        # Якщо рядок починається з *, замінюємо це на емодзі ◽️
+        response = re.sub(r"^\* ", "<emoji document_id=5276288708054624909>◽️</emoji> ", response, flags=re.MULTILINE)
+        return response
 
     @loader.command()
     async def gmi(self, message):
@@ -61,13 +67,11 @@ class Gemini(loader.Module):
         if not self.config['api_key']:
             return await utils.answer(message, self.strings["no_token"].format(self.get_prefix()))
 
-        m = await utils.answer(message, self.strings['asking_gemini'])
-
-        # Ішо
+        m = await utils.answer(message, f"<emoji document_id=5260399854500191689>👤</emoji> <b>Питання:</b> {q}\n\n<emoji document_id=5460677843119788507>🌟</emoji> <b>Відповідь: <b>Питаю у Gemini...</b>")
 
         client = OpenAI(
             api_key=self.config['api_key'],
-            base_url="https://my-openai-gemini-beta-two.vercel.app/v1" # Для Gemini а не ChatGPT
+            base_url="https://my-openai-gemini-beta-two.vercel.app/v1"  # Для Gemini а не ChatGPT
         )
 
         chat_completion = client.chat.completions.create(
@@ -80,4 +84,6 @@ class Gemini(loader.Module):
             model="gpt-3.5-turbo",
         )
 
-        return await m.edit(self.config['answer_text'].format(question=q, answer=chat_completion.choices[0].message.content), parse_mode="markdown")
+        # Используем правильное форматирование для ответа
+        answer_text = chat_completion.choices[0].message.content
+        return await m.edit(self.config['answer_text'].format(question=q, answer=answer_text), parse_mode="html")

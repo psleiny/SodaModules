@@ -1,3 +1,5 @@
+# meta developer: @SodaModules
+
 import logging
 from asyncio import sleep
 from aiogram.types import InlineQueryResultArticle, InputTextMessageContent

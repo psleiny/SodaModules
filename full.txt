@@ -7,3 +7,8 @@ etts
 sodaspy
 ipinfo
 auconv
+airalerts
+block url
+correctionmozg
+voicy
+weather

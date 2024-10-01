@@ -1,3 +1,5 @@
+# meta developer: @SodaModules
+
 import asyncio
 import logging
 import os

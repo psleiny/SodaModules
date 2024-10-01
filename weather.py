@@ -8,10 +8,13 @@ from .. import loader, utils
 
 logger = logging.getLogger(__name__)
 
-API_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+API_URLS = [
+    "https://api.met.no/weatherapi/locationforecast/2.0/compact",  # Primary API
+    "https://wttr.in",  # Free weather service without API key
+]
 
 class WeatherMod(loader.Module):
-    """Розширений модуль прогнозу погоди з використанням API yr.no з докладною статистикою за день"""
+    """Розширений модуль прогнозу погоди з використанням API yr.no та інших відкритих сервісів"""
 
     strings = {"name": "Погода"}
 
@@ -24,30 +27,38 @@ class WeatherMod(loader.Module):
         self.db = db
         self.client = client
 
-        # Load scheduled weather tasks for chat rooms
         chat_rooms = self.db.get(self.strings["name"], "weather_rooms", [])
         for chat_id in chat_rooms:
             asyncio.create_task(self.schedule_weather_updates(chat_id))
 
-        # Schedule the daily weather summary at 22:30
         asyncio.create_task(self.schedule_daily_summary())
 
-    @cached(ttl=3600)
     async def fetch_weather(self, latitude: float, longitude: float) -> dict:
-        """Отримання даних про погоду з API yr.no."""
+        """Отримання даних про погоду з декількох API."""
         headers = {"User-Agent": "YourWeatherBot/1.0"}
-        params = {"lat": latitude, "lon": longitude}
 
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(API_URL, params=params, headers=headers) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    logger.error(f"Помилка отримання даних про погоду: {response.status}")
-                    return None
-        except aiohttp.ClientError as e:
-            logger.error(f"Не вдалося отримати дані про погоду: {e}")
-            return None
+        for api_url in API_URLS:
+            try:
+                if "wttr.in" in api_url:
+                    # wttr.in requires parameters differently
+                    api_url = f"{api_url}/{latitude},{longitude}?format=j1"
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(api_url, headers=headers) as response:
+                            if response.status == 200:
+                                return await response.json()
+                            logger.error(f"Помилка отримання даних про погоду з {api_url}: {response.status}")
+                else:
+                    # Default API structure (like met.no)
+                    params = {"lat": latitude, "lon": longitude}
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(api_url, params=params, headers=headers) as response:
+                            if response.status == 200:
+                                return await response.json()
+                            logger.error(f"Помилка отримання даних про погоду з {api_url}: {response.status}")
+            except aiohttp.ClientError as e:
+                logger.error(f"Помилка доступу до {api_url}: {e}")
+        
+        return None
 
     async def weathercitycmd(self, message: Message) -> None:
         """Команда для встановлення або відображення міста за замовчуванням."""
@@ -66,48 +77,28 @@ class WeatherMod(loader.Module):
             await utils.answer(message, "🚫 Місто не вказане або не встановлене за замовчуванням.")
             return
 
-        # Отримуємо координати для міста
         latitude, longitude = await self.geocode_city(city)
         if not latitude or not longitude:
             await utils.answer(message, f"⚠️ Не вдалося знайти координати для <b>{city}</b>.")
             return
 
-        # Отримуємо дані про погоду з yr.no
         weather_data = await self.fetch_weather(latitude, longitude)
         if not weather_data:
             await utils.answer(message, f"⚠️ Не вдалося отримати дані про погоду для <b>{city}</b>. Спробуйте пізніше.")
             return
 
-        # Отримуємо інформацію про поточну погоду
-        timeseries = weather_data.get("properties", {}).get("timeseries", [])
+        timeseries = self.extract_timeseries(weather_data)
+
         if not timeseries:
             await utils.answer(message, f"⚠️ Немає доступних даних про погоду для <b>{city}</b>.")
             return
 
-        # Інформація про поточну погоду
         current_weather = timeseries[0]["data"]["instant"]["details"]
 
-        # Отримуємо всі доступні параметри
-        weather_details = {
-            "temperature": self.to_float(current_weather.get("air_temperature", "N/A")),
-            "dew_point": self.to_float(current_weather.get("dew_point_temperature", "N/A")),
-            "wind_speed": self.to_float(current_weather.get("wind_speed", "N/A")),
-            "wind_direction": self.to_float(current_weather.get("wind_from_direction", "N/A")),
-            "wind_gust": self.to_float(current_weather.get("wind_speed_of_gust", "N/A")),
-            "humidity": self.to_float(current_weather.get("relative_humidity", "N/A")),
-            "air_pressure": self.to_float(current_weather.get("air_pressure_at_sea_level", "N/A")),
-            "cloud_area_fraction": self.to_float(current_weather.get("cloud_area_fraction", "N/A")),
-            "fog_area_fraction": self.to_float(current_weather.get("fog_area_fraction", "N/A")),
-            "precipitation_amount": self.to_float(timeseries[0].get("data", {}).get("next_1_hours", {}).get("details", {}).get("precipitation_amount", "N/A")),
-            "precipitation_probability": self.to_float(timeseries[0].get("data", {}).get("next_1_hours", {}).get("details", {}).get("probability_of_precipitation", "N/A")),
-            "uv_index": self.to_float(current_weather.get("ultraviolet_index_clear_sky", "N/A")),
-            "visibility": self.to_float(current_weather.get("visibility", "N/A"))
-        }
+        weather_details = self.extract_weather_details(current_weather, timeseries)
 
-        # Збереження погодних даних для статистики
         self.save_daily_statistics(city, weather_details)
 
-        # Виводимо детальні дані про погоду
         await utils.answer(
             message,
             (
@@ -127,7 +118,7 @@ class WeatherMod(loader.Module):
         )
 
     async def geocode_city(self, city: str) -> tuple:
-        """Геокодування назви міста до широти та довготи з використанням зовнішнього сервісу."""
+        """Геокодування назви міста до широти та довготи з використанням OpenStreetMap."""
         geocode_url = f"https://nominatim.openstreetmap.org/search?q={utils.escape_html(city)}&format=json&limit=1"
         async with aiohttp.ClientSession() as session:
             async with session.get(geocode_url) as response:
@@ -136,6 +127,51 @@ class WeatherMod(loader.Module):
                     if data:
                         return float(data[0]["lat"]), float(data[0]["lon"])
         return None, None
+
+    def extract_timeseries(self, weather_data: dict) -> list:
+        """Extract timeseries for weather data."""
+        if "wttr.in" in weather_data.get("url", ""):
+            # Custom extraction for wttr.in API format
+            return [{
+                "data": {
+                    "instant": {
+                        "details": {
+                            "air_temperature": weather_data['current_condition']['temp_C'],
+                            "wind_speed": weather_data['current_condition']['windspeedKmph'],
+                            "dew_point_temperature": weather_data['current_condition']['FeelsLikeC'],
+                            "relative_humidity": weather_data['current_condition']['humidity'],
+                            "wind_speed_of_gust": weather_data['current_condition']['windspeedKmph'],
+                            "visibility": weather_data['current_condition']['visibility']
+                        }
+                    },
+                    "next_1_hours": {
+                        "details": {
+                            "precipitation_amount": weather_data['weather'][0]['hourly'][0]['precipMM'],
+                            "probability_of_precipitation": weather_data['weather'][0]['hourly'][0]['chanceofrain']
+                        }
+                    }
+                }
+            }]
+        # Default API structure
+        return weather_data.get("properties", {}).get("timeseries", [])
+
+    def extract_weather_details(self, current_weather: dict, timeseries: list) -> dict:
+        """Екстракція погодних деталей."""
+        return {
+            "temperature": self.to_float(current_weather.get("air_temperature", "N/A")),
+            "dew_point": self.to_float(current_weather.get("dew_point_temperature", "N/A")),
+            "wind_speed": self.to_float(current_weather.get("wind_speed", "N/A")),
+            "wind_direction": self.to_float(current_weather.get("wind_from_direction", "N/A")),
+            "wind_gust": self.to_float(current_weather.get("wind_speed_of_gust", "N/A")),
+            "humidity": self.to_float(current_weather.get("relative_humidity", "N/A")),
+            "air_pressure": self.to_float(current_weather.get("air_pressure_at_sea_level", "N/A")),
+            "cloud_area_fraction": self.to_float(current_weather.get("cloud_area_fraction", "N/A")),
+            "fog_area_fraction": self.to_float(current_weather.get("fog_area_fraction", "N/A")),
+            "precipitation_amount": self.to_float(timeseries[0].get("data", {}).get("next_1_hours", {}).get("details", {}).get("precipitation_amount", "N/A")),
+            "precipitation_probability": self.to_float(timeseries[0].get("data", {}).get("next_1_hours", {}).get("details", {}).get("probability_of_precipitation", "N/A")),
+            "uv_index": self.to_float(current_weather.get("ultraviolet_index_clear_sky", "N/A")),
+            "visibility": self.to_float(current_weather.get("visibility", "N/A"))
+        }
 
     def to_float(self, value):
         """Converts a value to float, returns 0 if conversion fails."""
@@ -152,10 +188,9 @@ class WeatherMod(loader.Module):
             "total_precipitation": 0,
             "average_wind_speed": 0,
             "wind_count": 0,
-            "max_uv_index": 0  # Ensure max_uv_index exists
+            "max_uv_index": 0
         })
 
-        # Оновлення статистики
         temperature = weather_details['temperature']
         wind_speed = weather_details['wind_speed']
         precipitation = weather_details['precipitation_amount']
@@ -166,122 +201,6 @@ class WeatherMod(loader.Module):
         stats["total_precipitation"] += precipitation
         stats["average_wind_speed"] = (stats["average_wind_speed"] * stats["wind_count"] + wind_speed) / (stats["wind_count"] + 1)
         stats["wind_count"] += 1
-        stats["max_uv_index"] = max(stats.get("max_uv_index", 0), uv_index)  # Use .get() to avoid KeyError
+        stats["max_uv_index"] = max(stats.get("max_uv_index", 0), uv_index)
 
         self.db.set(self.strings["name"], f"stats_{city}", stats)
-
-    async def addweathercmd(self, message: Message) -> None:
-        """Додати чат для отримання погодних оновлень кожну годину."""
-        chat_id = str(message.chat_id)
-
-        weather_rooms = self.db.get(self.strings["name"], "weather_rooms", [])
-        if chat_id not in weather_rooms:
-            weather_rooms.append(chat_id)
-            self.db.set(self.strings["name"], "weather_rooms", weather_rooms)
-            await utils.answer(message, "✅ Цей чат додано для погодних оновлень.")
-            asyncio.create_task(self.schedule_weather_updates(chat_id))
-        else:
-            await utils.answer(message, "⚠️ Цей чат вже отримує погодні оновлення.")
-
-    async def removeweathercmd(self, message: Message) -> None:
-        """Видалити чат з оновлень погоди."""
-        chat_id = str(message.chat_id)
-
-        weather_rooms = self.db.get(self.strings["name"], "weather_rooms", [])
-        if chat_id in weather_rooms:
-            weather_rooms.remove(chat_id)
-            self.db.set(self.strings["name"], "weather_rooms", weather_rooms)
-            await utils.answer(message, "❌ Цей чат було видалено з погодних оновлень.")
-        else:
-            await utils.answer(message, "⚠️ Цей чат не отримує погодні оновлення.")
-
-    async def schedule_weather_updates(self, chat_id: str) -> None:
-        """Плануємо погодні оновлення для чату кожну годину."""
-        while True:
-            # Поточний час
-            current_time = datetime.datetime.now().time()
-
-            # Якщо поточний час з 23:00 до 6:00, не надсилаємо оновлення
-            if current_time >= datetime.time(23, 0) or current_time < datetime.time(6, 0):
-                await asyncio.sleep(3600)
-                continue
-
-            # Використовуємо останнє збережене місто для отримання погоди
-            city = self.db.get(self.strings["name"], "city", "")
-            if not city:
-                await asyncio.sleep(3600)
-                continue
-
-            latitude, longitude = await self.geocode_city(city)
-            if not latitude or not longitude:
-                await asyncio.sleep(3600)
-                continue
-
-            weather_data = await self.fetch_weather(latitude, longitude)
-            if weather_data:
-                timeseries = weather_data.get("properties", {}).get("timeseries", [])
-                if timeseries:
-                    current_weather = timeseries[0]["data"]["instant"]["details"]
-                    temperature = current_weather.get("air_temperature", "N/A")
-                    wind_speed = current_weather.get("wind_speed", "N/A")
-                    wind_gust = current_weather.get("wind_speed_of_gust", "N/A")
-                    humidity = current_weather.get("relative_humidity", "N/A")
-                    precipitation = timeseries[0].get("data", {}).get("next_1_hours", {}).get("details", {}).get("precipitation_amount", "N/A")
-
-                    await self.client.send_message(
-                        int(chat_id),
-                        f"🌤 <b>Поточна погода для {city}:</b>\n"
-                        f"<b>Температура:</b> {temperature}°C\n"
-                        f"<b>Вітер:</b> {wind_speed} м/с (пориви: {wind_gust} м/с)\n"
-                        f"<b>Вологість:</b> {humidity}%\n"
-                        f"<b>Опади за годину:</b> {precipitation} мм"
-                    )
-
-            await asyncio.sleep(3600)  # Чекаємо 1 годину до наступного оновлення
-
-    async def schedule_daily_summary(self) -> None:
-        """Запланувати щоденну статистику на 22:30."""
-        while True:
-            now = datetime.datetime.now()
-            next_run = datetime.datetime.combine(now.date(), datetime.time(22, 30))
-            if now > next_run:
-                next_run += datetime.timedelta(days=1)
-
-            # Чекаємо до 22:30
-            await asyncio.sleep((next_run - now).total_seconds())
-
-            # Отримуємо дані для щоденної статистики
-            chat_rooms = self.db.get(self.strings["name"], "weather_rooms", [])
-            city = self.db.get(self.strings["name"], "city", "")
-
-            if city:
-                stats = self.db.get(self.strings["name"], f"stats_{city}", None)
-                if stats:
-                    high_temp = stats.get("high_temp", "N/A")
-                    low_temp = stats.get("low_temp", "N/A")
-                    total_precipitation = stats.get("total_precipitation", "N/A")
-                    average_wind_speed = stats.get("average_wind_speed", "N/A")
-                    max_uv_index = stats.get("max_uv_index", "N/A")
-
-                    summary_message = (
-                        f"📊 <b>Щоденна статистика для {city}:</b>\n"
-                        f"<b>Макс. температура:</b> {high_temp}°C\n"
-                        f"<b>Мін. температура:</b> {low_temp}°C\n"
-                        f"<b>Загальні опади:</b> {total_precipitation} мм\n"
-                        f"<b>Середня швидкість вітру:</b> {average_wind_speed} м/с\n"
-                        f"<b>Макс. УФ-індекс:</b> {max_uv_index}"
-                    )
-
-                    # Надсилаємо статистику до кожного чату
-                    for chat_id in chat_rooms:
-                        await self.client.send_message(int(chat_id), summary_message)
-
-                # Скидаємо статистику після надсилання
-                self.db.set(self.strings["name"], f"stats_{city}", {
-                    "high_temp": -999,
-                    "low_temp": 999,
-                    "total_precipitation": 0,
-                    "average_wind_speed": 0,
-                    "wind_count": 0,
-                    "max_uv_index": 0
-                })            

@@ -1,3 +1,5 @@
+# meta developer: @SodaModules
+
 from .. import loader, utils
 import re
 

@@ -8,7 +8,7 @@ sodaspy
 ipinfo
 auconv
 airalerts
-block url
+blockurl
 correctionmozg
 voicy
 weather

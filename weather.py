@@ -37,6 +37,7 @@ class WeatherMod(loader.Module):
         "invalid_city": "❗ Місто не знайдено",
         "api_key_set": "🔑 API ключ встановлено!",
         "service_switched": "🔄 Сервіс змінено на {}",
+        "unsupported_service": "❗ Непідтримуваний сервіс. Підтримуються: OpenWeatherMap, Yr.no",
         "service_missing": "❗ Сервіс не вибрано",
         "services_list": "Підтримувані сервіси: OpenWeatherMap, Yr.no",
         "city_list": "🏙 <b>Ваші міста:</b>\n{}",
@@ -67,12 +68,23 @@ class WeatherMod(loader.Module):
         return
 
     async def weatherservicecmd(self, message: Message) -> None:
-        """Switch between OpenWeatherMap and yr.no"""
-        if args := utils.get_args_raw(message):
-            service = args.lower()
-            if service in ["openweathermap", "yr.no"]:
-                self.db.set(self.strings["name"], "service", service.capitalize())
-                await utils.answer(message, self.strings["service_switched"].format(service.capitalize()))
+        """Switch between OpenWeatherMap and Yr.no"""
+        args = utils.get_args_raw(message)
+        if not args:
+            await utils.answer(message, self.strings["service_missing"])
+            return
+
+        service = args.strip().lower()
+        if service in ["openweathermap", "owm"]:
+            service_name = "OpenWeatherMap"
+        elif service in ["yr.no", "yrno"]:
+            service_name = "Yr.no"
+        else:
+            await utils.answer(message, self.strings["unsupported_service"])
+            return
+
+        self.db.set(self.strings["name"], "service", service_name)
+        await utils.answer(message, self.strings["service_switched"].format(service_name))
         return
 
     async def weathercitycmd(self, message: Message) -> None:
@@ -92,10 +104,12 @@ class WeatherMod(loader.Module):
             return
 
         cities = self.get_city_list()
-        cities.append(city)
-        self.db.set(self.strings["name"], "cities", cities)
-
-        await utils.answer(message, self.strings["city_added"].format(city))
+        if city not in cities:
+            cities.append(city)
+            self.db.set(self.strings["name"], "cities", cities)
+            await utils.answer(message, self.strings["city_added"].format(city))
+        else:
+            await utils.answer(message, f"Місто <code>{city}</code> вже є в списку.")
 
     async def delcitycmd(self, message: Message) -> None:
         """Видалити місто зі списку (Remove city from the city list)"""
@@ -129,12 +143,16 @@ class WeatherMod(loader.Module):
             await utils.answer(message, self.strings["city_prompt"])
             return
 
-        if service == "OpenWeatherMap":
-            await self.get_openweathermap_forecast(message, city)
-        elif service == "Yr.no":
-            await self.get_yrno_forecast(message, city)
-        else:
-            await utils.answer(message, self.strings["service_missing"])
+        try:
+            if service == "OpenWeatherMap":
+                await self.get_openweathermap_forecast(message, city)
+            elif service == "Yr.no":
+                await self.get_yrno_forecast(message, city)
+            else:
+                await utils.answer(message, self.strings["service_missing"])
+        except Exception as e:
+            logger.error(f"Error fetching weather: {e}")
+            await utils.answer(message, "❗ Виникла помилка під час отримання даних про погоду.")
         return
 
     async def get_openweathermap_forecast(self, message: Message, city: str) -> None:
@@ -154,15 +172,8 @@ class WeatherMod(loader.Module):
             return
 
         data = response.json()
-        weather_desc = data["weather"][0]["description"]
-        temp = data["main"]["temp"]
-        wind_speed = data["wind"]["speed"]
-        humidity = data["main"]["humidity"]
-        pressure = data["main"]["pressure"]
-        city_name = data["name"]
-
-        details = self.strings["weather_details"].format(temp, wind_speed, humidity, pressure)
-        await utils.answer(message, self.strings["weather_info"].format(city_name, f"{weather_desc}\n{details}"))
+        weather_info = self.extract_weather_details(data)
+        await utils.answer(message, self.strings["weather_info"].format(data["name"], weather_info))
 
     async def get_yrno_forecast(self, message: Message, city: str) -> None:
         """Fetch weather data from Yr.no"""
@@ -181,15 +192,22 @@ class WeatherMod(loader.Module):
             return
 
         root = ET.fromstring(response.content)
+        weather_info = self.extract_weather_details_yrno(root)
+        await utils.answer(message, self.strings["weather_info"].format(city_name, weather_info))
+
+    def extract_weather_details(self, data: dict) -> str:
+        """Extract and format weather details from OpenWeatherMap data"""
+        temp = data["main"]["temp"]
+        wind_speed = data["wind"]["speed"]
+        humidity = data["main"]["humidity"]
+        pressure = data["main"]["pressure"]
+        weather_desc = data["weather"][0]["description"]
+        return self.strings["weather_details"].format(temp, wind_speed, humidity, pressure) + f"\n{weather_desc}"
+
+    def extract_weather_details_yrno(self, root: ET.Element) -> str:
+        """Extract and format weather details from Yr.no XML data"""
         temp = root.find(".//temperature").attrib["value"]
         wind_speed = root.find(".//windSpeed").attrib["mps"]
         humidity = root.find(".//humidity").attrib["value"]
         pressure = root.find(".//pressure").attrib["value"]
-        city_name = root.find(".//location/name").text
-
-        details = self.strings["weather_details"].format(temp, wind_speed, humidity, pressure)
-        await utils.answer(message, self.strings["weather_info"].format(city_name, details))
-
-    async def weatherservicescmd(self, message: Message) -> None:
-        """Показати всі підтримувані сервіси (List supported weather services)"""
-        await utils.answer(message, self.strings["services_list"])
+        return self.strings["weather_details"].format(temp, wind_speed, humidity, pressure)

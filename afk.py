@@ -62,7 +62,6 @@ class AFKMod(loader.Module):
             await utils.answer(message, self.strings("media_not_found", message))
             return
 
-        # Зберігаємо вказаний медіа URL
         self._db.set(__name__, "afk_media", args)
         await utils.answer(message, self.strings("media_installed", message))
 
@@ -106,10 +105,9 @@ class AFKMod(loader.Module):
             elif afk_state is not False:
                 ret = self.strings("afk_reason", message).format(diff, afk_state)
 
-            # Відправляємо відповідь AFK разом з медіа, якщо воно є
             media = self._db.get(__name__, "afk_media")
             if media:
-                await message.reply(ret, file=media)  # Надсилаємо медіа безпосередньо
+                await message.reply(ret, file=media)  
             else:
                 await utils.answer(message, ret, reply_to=message)
 
@@ -131,7 +129,7 @@ class AFKMod(loader.Module):
 
         media = self._db.get(__name__, "afk_media")
         if media:
-            await message.reply(self.strings("afk_preview", message).format(ret), file=media)  # Надсилаємо медіа безпосередньо
+            await message.reply(self.strings("afk_preview", message).format(ret), file=media) 
         else:
             await utils.answer(message, self.strings("afk_preview", message).format(ret))
 

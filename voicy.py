@@ -2,22 +2,17 @@ import asyncio
 import logging
 import os
 import tempfile
-
-import speech_recognition as sr
+import wave
+from vosk import Model, KaldiRecognizer
 from pydub import AudioSegment
 from telethon.tl.types import DocumentAttributeVideo, Message
-
-# Import Vosk for offline recognition
-import vosk
-import whisper
-from langdetect import detect
-
-# For Google Speech Recognition as fallback
-import google.cloud.speech as google_speech
 
 from .. import loader, utils
 
 logger = logging.getLogger(__name__)
+
+# Load Vosk model once during initialization
+vosk_model = Model("path_to_vosk_model")
 
 @loader.tds
 class VoicyMod(loader.Module):
@@ -36,36 +31,20 @@ class VoicyMod(loader.Module):
 
     def __init__(self):
         self.config = loader.ModuleConfig(
-            loader.ConfigValue("language", "en-US", lambda: self.strings["_cfg_lang"]),
-            loader.ConfigValue("ignore_users", [], lambda: self.strings["_cfg_ignore_users"]),
-            loader.ConfigValue("silent", False, lambda: self.strings["_cfg_silent"]),
-            loader.ConfigValue("google_credentials", "", lambda: self.strings["_cfg_google_credentials"]),
+            loader.ConfigValue("ignore_users", [], lambda: self.strings["_cfg_ignore_users"], validator=loader.validators.Series(validator=loader.validators.TelegramID())),
+            loader.ConfigValue("silent", False, lambda: self.strings["_cfg_silent"], validator=loader.validators.Boolean()),
         )
-
-        # Initialize Whisper model (you can choose the model size based on accuracy and speed needs)
-        self.whisper_model = whisper.load_model("small")
-
-        # Initialize Vosk model (ensure you have the appropriate language model downloaded)
-        self.vosk_model = vosk.Model("path_to_vosk_model")
 
     async def client_ready(self):
-        self.v2a = await self.import_lib(
-            "https://libs.hikariatama.ru/v2a.py",
-            suspend_on_error=True,
-        )
         self.chats = self.pointer("chats", [])
 
     async def download_media_to_temp(self, message, tmpdir):
         """Download and prepare media as a temp file."""
         try:
-            file_name = "audio.mp3" if message.audio else "audio.ogg"
+            file_name = "audio.ogg"
             file_path = os.path.join(tmpdir, file_name)
 
             media_data = await message.download_media(bytes)
-
-            if message.video:
-                media_data = await self.v2a.convert(media_data, "audio.ogg")
-
             with open(file_path, "wb") as f:
                 f.write(media_data)
 
@@ -74,76 +53,38 @@ class VoicyMod(loader.Module):
             logger.exception("Error downloading or converting media: %s", e)
             return None
 
-    async def preprocess_audio(self, file_path):
-        """Preprocess audio to standardize format for recognition."""
+    def convert_to_wav(self, file_path):
+        """Convert audio file to WAV format required by Vosk."""
         try:
             audio = AudioSegment.from_file(file_path)
-            # Normalize, convert to mono, and resample to 16kHz
-            audio = audio.set_frame_rate(16000).set_channels(1)
-            processed_file_path = file_path.replace(".ogg", "_processed.wav")
-            audio.export(processed_file_path, format="wav")
-            return processed_file_path
+            wav_path = file_path.replace(".ogg", ".wav")
+            audio.export(wav_path, format="wav")
+            return wav_path
         except Exception as e:
-            logger.exception("Error in preprocessing audio: %s", e)
+            logger.exception("Error converting to WAV: %s", e)
             return None
 
-    async def recognize_voice_vosk(self, file_path):
-        """Recognize voice using Vosk."""
+    def recognize_voice_vosk(self, wav_path):
+        """Recognize voice from audio file using Vosk."""
         try:
-            rec = vosk.KaldiRecognizer(self.vosk_model, 16000)
-            with open(file_path, "rb") as f:
+            with wave.open(wav_path, "rb") as audio_file:
+                if audio_file.getnchannels() != 1 or audio_file.getsampwidth() != 2 or audio_file.getframerate() not in [8000, 16000]:
+                    logger.error("Unsupported audio format for Vosk")
+                    return None
+
+                recognizer = KaldiRecognizer(vosk_model, audio_file.getframerate())
                 while True:
-                    data = f.read(4000)
+                    data = audio_file.readframes(4000)
                     if len(data) == 0:
                         break
-                    if rec.AcceptWaveform(data):
-                        break
-            result = rec.FinalResult()
-            return result["text"] if "text" in result else None
+                    if recognizer.AcceptWaveform(data):
+                        result = recognizer.Result()
+                        return result
+                final_result = recognizer.FinalResult()
+                return final_result
         except Exception as e:
             logger.exception("Error during Vosk recognition: %s", e)
             return None
-
-    async def recognize_voice_whisper(self, file_path):
-        """Recognize voice using Whisper."""
-        try:
-            result = self.whisper_model.transcribe(file_path)
-            return result["text"]
-        except Exception as e:
-            logger.exception("Error during Whisper recognition: %s", e)
-            return None
-
-    async def recognize_voice_google(self, file_path):
-        """Recognize voice using Google Cloud Speech-to-Text."""
-        try:
-            client = google_speech.SpeechClient(credentials=self.config["google_credentials"])
-            audio = google_speech.RecognitionAudio(uri=file_path)
-            config = google_speech.RecognitionConfig(
-                encoding=google_speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=16000,
-                language_code="en-US",
-            )
-            response = client.recognize(config=config, audio=audio)
-
-            return " ".join([result.alternatives[0].transcript for result in response.results])
-        except Exception as e:
-            logger.exception("Error during Google recognition: %s", e)
-            return None
-
-    async def recognize_voice(self, file_path, duration):
-        """Select and use the appropriate recognition service."""
-        # Preprocess audio
-        processed_file_path = await self.preprocess_audio(file_path)
-
-        # Select recognition service based on file duration
-        if duration < 10:
-            result = await self.recognize_voice_vosk(processed_file_path)
-        elif duration < 60:
-            result = await self.recognize_voice_whisper(processed_file_path)
-        else:
-            result = await self.recognize_voice_google(processed_file_path)
-
-        return result
 
     async def recognize(self, message: Message):
         try:
@@ -156,18 +97,17 @@ class VoicyMod(loader.Module):
                         await utils.answer(m, self.strings["error"])
                     return
 
-                # Detect the duration of the file to determine recognition service
-                duration = next(
-                    (attr.duration for attr in message.media.document.attributes if isinstance(attr, DocumentAttributeVideo)),
-                    0
-                ) or getattr(message.audio, "duration", 0)
+                wav_path = self.convert_to_wav(file_path)
 
-                recognized_text = await self.recognize_voice(file_path, duration)
+                if not wav_path:
+                    if not self.config["silent"]:
+                        await utils.answer(m, self.strings["error"])
+                    return
+
+                recognized_text = self.recognize_voice_vosk(wav_path)
 
                 if recognized_text:
-                    await utils.answer(
-                        m, self.strings["converted"].format(recognized_text)
-                    )
+                    await utils.answer(m, self.strings["converted"].format(recognized_text))
                 else:
                     if not self.config["silent"]:
                         await utils.answer(m, self.strings["error"])
@@ -200,6 +140,37 @@ class VoicyMod(loader.Module):
             await message.delete()
 
         await self.recognize(reply)
+
+    async def watcher(self, message: Message):
+        try:
+            if (
+                utils.get_chat_id(message) not in self.get("chats", [])
+                or not message.media
+                or not (message.video or message.audio or message.media.document.attributes[0].voice)
+                or message.gif
+                or message.sticker
+            ):
+                return
+        except (AttributeError, IndexError):
+            return
+
+        if message.sender_id in self.config["ignore_users"]:
+            return
+
+        try:
+            duration = next(
+                (attr.duration for attr in message.media.document.attributes if isinstance(attr, DocumentAttributeVideo)),
+                0
+            ) or getattr(message.audio, "duration", 0)
+
+            if duration > 300 or message.document.size / 1024 / 1024 > 5:
+                if not self.config["silent"]:
+                    await utils.answer(message, self.strings["too_big"])
+                return
+        except (AttributeError, IndexError):
+            pass
+
+        await self.recognize(message)
 
     @loader.unrestricted
     async def autovoicecmd(self, message: Message):

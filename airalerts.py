@@ -1,7 +1,5 @@
-# meta developer: @SodaModules
-
 import logging
-from asyncio import sleep
+from asyncio import gather
 from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import Message
@@ -30,6 +28,7 @@ class AirAlertMod(loader.Module):
     strings = {"name": "AirAlert"}
 
     async def client_ready(self, client, db) -> None:
+        """Join the air alert channel only if not already joined."""
         self.regions = db.get(self.strings["name"], "regions", [])
         self.nametag = db.get(self.strings["name"], "nametag", "")
         self.forwards = db.get(self.strings["name"], "forwards", [])
@@ -40,7 +39,9 @@ class AirAlertMod(loader.Module):
         self.me = (await client.get_me()).id
 
         try:
-            await client(JoinChannelRequest(await self.client.get_entity("t.me/air_alert_ua")))
+            entity = await client.get_entity("t.me/air_alert_ua")
+            if entity.left:  
+                await client(JoinChannelRequest(entity))
         except Exception:
             logger.error("Can't join t.me/air_alert_ua")
 
@@ -82,9 +83,7 @@ class AirAlertMod(loader.Module):
             await utils.answer(message, "<b>Чат успешно установлен для перенаправления</b>")
 
     async def alert_inline_handler(self, query: GeekInlineQuery) -> None:
-        """Выбор регионов.
-        Чтобы получать все предупреждения введите alert all.
-        Чтобы посмотреть ваши регионы alert my"""
+        """Optimized region selection handling."""
         text = query.args
 
         if not text:
@@ -116,50 +115,25 @@ class AirAlertMod(loader.Module):
                     parse_mode="HTML",
                 ),
             )
-            for reg in result[:50]
+            for reg in result[:50]  
         ]
         await query.answer(res, cache_time=0)
 
     async def watcher(self, message: Message) -> None:
-        """Forward air alert messages to configured chats."""
-        if (
-            getattr(message, "out", False)
-            and getattr(message, "via_bot_id", False)
-            and message.via_bot_id == self.bot_id
-            and "⌛ Редагування регіону" in getattr(message, "raw_text", "")
-        ):
-            self.regions = self.db.get(self.strings["name"], "regions", [])
-            region = message.raw_text[25:]
-            state = "доданий"
-            if region not in self.regions:
-                self.regions.append(region)
-            else:
-                self.regions.remove(region)
-                state = "видалений"
-            self.db.set(self.strings["name"], "regions", self.regions)
-            
-            try:
-                e = await self.client.get_entity("t.me/air_alert_ua")
-                sub = not e.left
-            except Exception:
-                sub = False
-            
-            n = "\n"
-            res = f"<b>Регіон <code>{region}</code> успішно {state}</b>{n}"
-            if not sub:
-                res += "<b>НЕ ВИХОДЬ З @air_alert_ua (інакше нічого не працюватиме)</b>"
-                await self.client(
-                    JoinChannelRequest(
-                        await self.client.get_entity("t.me/air_alert_ua")
-                    )
-                )
-            await self.inline.form(res, message=message)
+        """Forward air alert messages to configured chats immediately and asynchronously."""
         
         if (
             getattr(message, "peer_id", False)
             and getattr(message.peer_id, "channel_id", 0) == 1766138888
             and ("all" in self.regions or any(reg in message.raw_text for reg in self.regions))
         ):
-            await self.inline.bot.send_message(self.me, message.text, parse_mode="HTML")
+            tasks = [
+                self.inline.bot.send_message(self.me, message.text, parse_mode="HTML")
+            ]
+            
             for chat in self.forwards:
-                await self.client.send_message(chat, message.text + "\n\n" + self.nametag)
+                tasks.append(
+                    self.client.send_message(chat, message.text + "\n\n" + self.nametag)
+                )
+            
+            await gather(*tasks)  

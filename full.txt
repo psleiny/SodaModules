@@ -12,3 +12,4 @@ blockurl
 correctionmozg
 voicy
 weather
+afk

@@ -14,9 +14,6 @@ logger = logging.getLogger(__name__)
 n = "\n"
 rus = "ёйцукенгшщзхъфывапролджэячсмитьбю"
 
-# Your OpenWeatherMap API key here
-OPENWEATHERMAP_API_KEY = "your_openweathermap_api_key"
-
 
 def escape_ansi(line):
     ansi_escape = re.compile(r"(\x9B|\x1B\[)[0-?]*[ -\/]*[@-~]")
@@ -31,11 +28,23 @@ class WeatherMod(loader.Module):
     async def client_ready(self, client, db) -> None:
         self.db = db
         self.client = client
+        self.api_key = self.db.get(self.strings["name"], "api_key", "")
+        self.default_city = self.db.get(self.strings["name"], "city", "")
+
+    async def apicmd(self, message: Message) -> None:
+        """Set API key for OpenWeatherMap"""
+        if args := utils.get_args_raw(message):
+            self.db.set(self.strings["name"], "api_key", args)
+            self.api_key = args
+            await utils.answer(message, "<b>✅ API key has been set successfully!</b>")
+        else:
+            await utils.answer(message, "<b>🚫 Please provide a valid API key.</b>")
 
     async def weathercitycmd(self, message: Message) -> None:
         """Set default city for forecast"""
         if args := utils.get_args_raw(message):
             self.db.set(self.strings["name"], "city", args)
+            self.default_city = args
 
         await utils.answer(
             message,
@@ -48,9 +57,13 @@ class WeatherMod(loader.Module):
 
     async def get_weather_data(self, city: str, lang: str = "en") -> dict:
         """Fetches weather data from OpenWeatherMap."""
+        if not self.api_key:
+            logger.error("API key is not set.")
+            return {"error": "🚫 API key is not set. Use the .api command to set it."}
+
         url = (
             f"http://api.openweathermap.org/data/2.5/weather?q={quote_plus(city)}"
-            f"&appid={OPENWEATHERMAP_API_KEY}&units=metric&lang={lang}"
+            f"&appid={self.api_key}&units=metric&lang={lang}"
         )
         response = requests.get(url)
         if response.status_code == 200:
@@ -62,6 +75,9 @@ class WeatherMod(loader.Module):
         """Formats the weather data into a user-friendly message."""
         if not data:
             return "🚫 Unable to fetch weather data."
+
+        if "error" in data:
+            return data["error"]
 
         weather = data["weather"][0]["description"].capitalize()
         temp = data["main"]["temp"]
@@ -77,9 +93,10 @@ class WeatherMod(loader.Module):
 
     async def weathercmd(self, message: Message) -> None:
         """Current forecast for provided city"""
-        city = utils.get_args_raw(message)
+        city = utils.get_args_raw(message) or self.default_city
         if not city:
-            city = self.db.get(self.strings["name"], "city", "")
+            await utils.answer(message, "<b>🚫 No city provided. Set a default city using .weathercitycmd</b>")
+            return
 
         lang = "ru" if city and city[0].lower() in rus else "en"
         data = await self.get_weather_data(city, lang)
@@ -88,9 +105,7 @@ class WeatherMod(loader.Module):
 
     async def weather_inline_handler(self, query: GeekInlineQuery) -> None:
         """Search city"""
-        args = query.args
-        if not args:
-            args = self.db.get(self.strings["name"], "city", "")
+        args = query.args or self.default_city
 
         if not args:
             return

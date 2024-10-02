@@ -1,20 +1,18 @@
-# meta developer: @SodaModules
-
 import asyncio
 import logging
 import os
 import tempfile
-
-import speech_recognition as sr
+import wave
+from vosk import Model, KaldiRecognizer
 from pydub import AudioSegment
 from telethon.tl.types import DocumentAttributeVideo, Message
-
-# Import Azure Speech SDK
-import azure.cognitiveservices.speech as speechsdk
 
 from .. import loader, utils
 
 logger = logging.getLogger(__name__)
+
+# Load Vosk model once during initialization
+vosk_model = Model("path_to_vosk_model")
 
 @loader.tds
 class VoicyMod(loader.Module):
@@ -33,58 +31,20 @@ class VoicyMod(loader.Module):
 
     def __init__(self):
         self.config = loader.ModuleConfig(
-            loader.ConfigValue(
-                "language", 
-                "en-US", 
-                lambda: self.strings["_cfg_lang"], 
-                validator=loader.validators.RegExp(r"^[a-z]{2}-[A-Z]{2}$"),
-            ),
-            loader.ConfigValue(
-                "ignore_users", 
-                [], 
-                lambda: self.strings["_cfg_ignore_users"], 
-                validator=loader.validators.Series(
-                    validator=loader.validators.TelegramID()
-                ),
-            ),
-            loader.ConfigValue(
-                "silent", 
-                False, 
-                lambda: self.strings["_cfg_silent"], 
-                validator=loader.validators.Boolean(),
-            ),
-            loader.ConfigValue(
-                "azure_key", 
-                "", 
-                lambda: self.strings["_cfg_azure_key"], 
-                validator=loader.validators.String(),
-            ),
-            loader.ConfigValue(
-                "azure_region", 
-                "", 
-                lambda: self.strings["_cfg_azure_region"], 
-                validator=loader.validators.String(),
-            ),
+            loader.ConfigValue("ignore_users", [], lambda: self.strings["_cfg_ignore_users"], validator=loader.validators.Series(validator=loader.validators.TelegramID())),
+            loader.ConfigValue("silent", False, lambda: self.strings["_cfg_silent"], validator=loader.validators.Boolean()),
         )
 
     async def client_ready(self):
-        self.v2a = await self.import_lib(
-            "https://libs.hikariatama.ru/v2a.py",
-            suspend_on_error=True,
-        )
         self.chats = self.pointer("chats", [])
 
     async def download_media_to_temp(self, message, tmpdir):
         """Download and prepare media as a temp file."""
         try:
-            file_name = "audio.mp3" if message.audio else "audio.ogg"
+            file_name = "audio.ogg"
             file_path = os.path.join(tmpdir, file_name)
 
             media_data = await message.download_media(bytes)
-
-            if message.video:
-                media_data = await self.v2a.convert(media_data, "audio.ogg")
-
             with open(file_path, "wb") as f:
                 f.write(media_data)
 
@@ -93,32 +53,37 @@ class VoicyMod(loader.Module):
             logger.exception("Error downloading or converting media: %s", e)
             return None
 
-    async def recognize_voice(self, file_path):
-        """Recognize voice from audio file using Azure Speech Service."""
+    def convert_to_wav(self, file_path):
+        """Convert audio file to WAV format required by Vosk."""
         try:
-            # Set up Azure Speech configuration
-            speech_config = speechsdk.SpeechConfig(
-                subscription=self.config["azure_key"],
-                region=self.config["azure_region"]
-            )
-            audio_input = speechsdk.AudioConfig(filename=file_path)
-            recognizer = speechsdk.SpeechRecognizer(speech_config=speech_config, audio_config=audio_input)
-
-            # Start recognition
-            result = recognizer.recognize_once_async().get()
-
-            if result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                return result.text
-            elif result.reason == speechsdk.ResultReason.NoMatch:
-                logger.error("No speech could be recognized.")
-                return None
-            elif result.reason == speechsdk.ResultReason.Canceled:
-                cancellation_details = result.cancellation_details
-                logger.error("Recognition canceled: %s", cancellation_details.reason)
-                return None
-
+            audio = AudioSegment.from_file(file_path)
+            wav_path = file_path.replace(".ogg", ".wav")
+            audio.export(wav_path, format="wav")
+            return wav_path
         except Exception as e:
-            logger.exception("Error during recognition: %s", e)
+            logger.exception("Error converting to WAV: %s", e)
+            return None
+
+    def recognize_voice_vosk(self, wav_path):
+        """Recognize voice from audio file using Vosk."""
+        try:
+            with wave.open(wav_path, "rb") as audio_file:
+                if audio_file.getnchannels() != 1 or audio_file.getsampwidth() != 2 or audio_file.getframerate() not in [8000, 16000]:
+                    logger.error("Unsupported audio format for Vosk")
+                    return None
+
+                recognizer = KaldiRecognizer(vosk_model, audio_file.getframerate())
+                while True:
+                    data = audio_file.readframes(4000)
+                    if len(data) == 0:
+                        break
+                    if recognizer.AcceptWaveform(data):
+                        result = recognizer.Result()
+                        return result
+                final_result = recognizer.FinalResult()
+                return final_result
+        except Exception as e:
+            logger.exception("Error during Vosk recognition: %s", e)
             return None
 
     async def recognize(self, message: Message):
@@ -132,12 +97,17 @@ class VoicyMod(loader.Module):
                         await utils.answer(m, self.strings["error"])
                     return
 
-                recognized_text = await self.recognize_voice(file_path)
+                wav_path = self.convert_to_wav(file_path)
+
+                if not wav_path:
+                    if not self.config["silent"]:
+                        await utils.answer(m, self.strings["error"])
+                    return
+
+                recognized_text = self.recognize_voice_vosk(wav_path)
 
                 if recognized_text:
-                    await utils.answer(
-                        m, self.strings["converted"].format(recognized_text)
-                    )
+                    await utils.answer(m, self.strings["converted"].format(recognized_text))
                 else:
                     if not self.config["silent"]:
                         await utils.answer(m, self.strings["error"])
@@ -173,7 +143,6 @@ class VoicyMod(loader.Module):
 
     async def watcher(self, message: Message):
         try:
-            # Ensure that the message has media and voice attributes, and is in monitored chats
             if (
                 utils.get_chat_id(message) not in self.get("chats", [])
                 or not message.media
@@ -188,13 +157,12 @@ class VoicyMod(loader.Module):
         if message.sender_id in self.config["ignore_users"]:
             return
 
-        # Ensure media isn't too big or long
         try:
             duration = next(
                 (attr.duration for attr in message.media.document.attributes if isinstance(attr, DocumentAttributeVideo)),
                 0
             ) or getattr(message.audio, "duration", 0)
-            
+
             if duration > 300 or message.document.size / 1024 / 1024 > 5:
                 if not self.config["silent"]:
                     await utils.answer(message, self.strings["too_big"])

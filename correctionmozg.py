@@ -1,114 +1,161 @@
 import random
 from telethon import types
+from telethon.tl.custom.message import Message
 from .. import loader, utils
 
 @loader.tds
 class MegaMozgMod(loader.Module):
+    """
+    Module to toggle a mode in chats that allows random replies based on certain conditions.
+    """
     strings = {
         "name": "MegaMozg",
         "pref": "<b>[MegaMozg]</b> ",
         "need_arg": "{}Потрібен аргумент",
-        "status": "{}{}",
+        "status": "{}Шанс встановлено на {}",
         "on": "{}Ввімкнено",
         "off": "{}Вимкнено",
     }
-    _db_name = "MegaMozg"
 
-    async def client_ready(self, _, db):
+    _db_name = "MegaMozg"
+    _default_chance = 0
+
+    async def client_ready(self, client, db):
         self.db = db
 
     @staticmethod
-    def str2bool(v: str) -> bool:
+    def str2bool(value: str) -> bool:
         """
-        Converts a string to a boolean.
-        Supports various representations of truthy and falsy values.
+        Converts a string to a boolean value. Supports various representations
+        of truthy and falsy strings.
         """
-        return v.lower() in (
-            "yes", "y", "ye", "true", "t", "1", "on", "enable", "start", "run", "go", "да",
-        )
+        truthy_values = {"yes", "y", "ye", "true", "t", "1", "on", "enable", "start", "run", "go", "да"}
+        return value.strip().lower() in truthy_values
 
-    async def mozgcmd(self, m: types.Message):
-        ".mozg <on/off/...> - Переключити режим дурника в чаті"
-        args = utils.get_args_raw(m)
-        if not m.chat:
-            return
-        
-        chat = m.chat.id
-        chats = set(self.db.get(self._db_name, "chats", []))
+    def get_active_chats(self) -> set:
+        """
+        Fetches the set of chats where the mode is enabled.
+        """
+        return set(self.db.get(self._db_name, "chats", []))
 
-        if not args:
-            # Handle missing argument
-            return await utils.answer(m, self.strings("need_arg").format(self.strings("pref")))
-
-        if self.str2bool(args):
-            chats.add(chat)
-            self.db.set(self._db_name, "chats", list(chats))
-            return await utils.answer(m, self.strings("on").format(self.strings("pref")))
-        
-        chats.discard(chat)
+    def set_active_chats(self, chats: set):
+        """
+        Updates the list of active chats in the database.
+        """
         self.db.set(self._db_name, "chats", list(chats))
-        return await utils.answer(m, self.strings("off").format(self.strings("pref")))
 
-    async def mozgchancecmd(self, m: types.Message):
-        ".mozgchance <int> - Встановити шанс 1 до N.\n0 - завжди відповідати"
-        args = utils.get_args_raw(m)
+    def get_reply_chance(self) -> int:
+        """
+        Retrieves the current reply chance from the database. Defaults to 0 if not set.
+        """
+        return self.db.get(self._db_name, "chance", self._default_chance)
+
+    def set_reply_chance(self, chance: int):
+        """
+        Sets the reply chance in the database.
+        """
+        self.db.set(self._db_name, "chance", chance)
+
+    async def mozgcmd(self, message: Message):
+        """
+        .mozg <on/off> - Toggle the MegaMozg mode in the chat.
+        """
+        args = utils.get_args_raw(message)
+        if not args:
+            return await utils.answer(message, self.strings["need_arg"].format(self.strings["pref"]))
+
+        chat_id = message.chat_id
+        if not chat_id:
+            return
+
+        active_chats = self.get_active_chats()
+        if self.str2bool(args):
+            active_chats.add(chat_id)
+            self.set_active_chats(active_chats)
+            return await utils.answer(message, self.strings["on"].format(self.strings["pref"]))
+        
+        active_chats.discard(chat_id)
+        self.set_active_chats(active_chats)
+        return await utils.answer(message, self.strings["off"].format(self.strings["pref"]))
+
+    async def mozgchancecmd(self, message: Message):
+        """
+        .mozgchance <int> - Set the reply chance as 1 out of N.
+        0 means always respond.
+        """
+        args = utils.get_args_raw(message)
         if not args or not args.isdigit():
-            # Handle missing or invalid argument
-            return await utils.answer(m, self.strings("need_arg").format(self.strings("pref")))
+            return await utils.answer(message, self.strings["need_arg"].format(self.strings["pref"]))
 
         chance = int(args)
-        self.db.set(self._db_name, "chance", chance)
-        return await utils.answer(m, self.strings("status").format(self.strings("pref"), chance))
+        self.set_reply_chance(chance)
+        return await utils.answer(message, self.strings["status"].format(self.strings["pref"], chance))
 
-    async def watcher(self, m: types.Message):
+    async def watcher(self, message: Message):
         """
-        Watches the chat for random replies based on a set chance and random words.
+        Watches the chat for messages and replies based on a set chance and random word matching.
         """
-        # Preliminary checks
-        if not isinstance(m, types.Message):
+        if not isinstance(message, types.Message):
             return
-        if m.sender_id == (await m.client.get_me()).id or not m.chat:
+        if message.sender_id == (await message.client.get_me()).id or not message.chat_id:
             return
 
-        chat_id = m.chat.id
-        active_chats = self.db.get(self._db_name, "chats", [])
+        chat_id = message.chat_id
+        active_chats = self.get_active_chats()
         if chat_id not in active_chats:
             return
-        
-        # Check random chance logic
-        chance = self.db.get(self._db_name, "chance", 0)
-        if chance > 0 and random.randint(0, chance) != 0:
+
+        if not self.should_reply():
             return
 
-        # Randomly select words from the message
-        text = m.raw_text
-        words = list(filter(lambda x: len(x) >= 3, text.split()))
-        if len(words) < 2:
+        selected_words = self.extract_random_words(message.raw_text, 2)
+        if not selected_words:
             return
 
-        selected_words = random.sample(words, 2)
-        messages = []
-
-        # Search for messages containing the random words
-        for word in selected_words:
-            async for msg in m.client.iter_messages(m.chat.id, search=word):
-                if msg.replies and msg.replies.max_id:
-                    messages.append(msg)
-
+        messages = await self.search_for_messages(message, selected_words)
         if not messages:
             return
 
-        # Select a random message to reply to
-        chosen_msg = random.choice(messages)
-        sid = chosen_msg.id
-        eid = chosen_msg.replies.max_id
+        await self.reply_to_random_message(message, messages)
 
-        # Get messages in the reply thread
+    def should_reply(self) -> bool:
+        """
+        Determines if the bot should reply based on the set chance.
+        """
+        chance = self.get_reply_chance()
+        return chance == 0 or random.randint(0, chance) == 0
+
+    def extract_random_words(self, text: str, count: int) -> list:
+        """
+        Extracts random words from a given text, filtering by word length (>= 3).
+        """
+        words = list(filter(lambda x: len(x) >= 3, text.split()))
+        return random.sample(words, count) if len(words) >= count else []
+
+    async def search_for_messages(self, message: Message, words: list) -> list:
+        """
+        Searches the chat for messages that contain any of the given words.
+        """
+        found_messages = []
+        for word in words:
+            async for msg in message.client.iter_messages(message.chat_id, search=word):
+                if msg.replies and msg.replies.max_id:
+                    found_messages.append(msg)
+        return found_messages
+
+    async def reply_to_random_message(self, message: Message, messages: list):
+        """
+        Selects a random message from the list and replies to a random message in its reply thread.
+        """
+        chosen_msg = random.choice(messages)
+        start_id = chosen_msg.id
+        end_id = chosen_msg.replies.max_id
+
         reply_msgs = [
-            msg async for msg in m.client.iter_messages(m.chat.id, ids=list(range(sid + 1, eid + 1)))
-            if msg and msg.reply_to and msg.reply_to.reply_to_msg_id == sid
+            msg async for msg in message.client.iter_messages(message.chat_id, ids=list(range(start_id + 1, end_id + 1)))
+            if msg and msg.reply_to and msg.reply_to.reply_to_msg_id == start_id
         ]
 
         if reply_msgs:
             reply_msg = random.choice(reply_msgs)
-            await m.reply(reply_msg)
+            await message.reply(reply_msg)

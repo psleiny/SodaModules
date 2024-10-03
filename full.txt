@@ -10,4 +10,4 @@ auconv
 correctionmozg
 voicy
 weather
-afk
+afk_with_gif

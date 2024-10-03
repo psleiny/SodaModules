@@ -1,17 +1,10 @@
 import logging
-import aiohttp
-from asyncio import gather
-from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
-from telethon.tl.functions.channels import JoinChannelRequest
+from alerts_in_ua import Client as AlertsClient
 from telethon.tl.types import Message
 from telethon.utils import get_display_name
 from .. import loader, utils
-from ..inline import GeekInlineQuery, rand
 
 logger = logging.getLogger(__name__)
-
-API_URL = "https://api.alerts.in.ua/v1/alerts/active.json"
-IP_GEO_URL = "https://ipinfo.io/json"
 
 class AirAlertMod(loader.Module):
     """🇺🇦 Air Alert Warning with region selection and API key setup."""
@@ -26,9 +19,10 @@ class AirAlertMod(loader.Module):
         self.selected_region = ""
         self.bot_id = None
         self.me = None
+        self.alerts_client = None
 
     async def client_ready(self, client, db) -> None:
-        """Initialize client, regions, and join alert channel."""
+        """Initialize client and database settings."""
         self.regions = db.get(self.strings["name"], "regions", [])
         self.nametag = db.get(self.strings["name"], "nametag", "")
         self.forwards = db.get(self.strings["name"], "forwards", [])
@@ -39,37 +33,8 @@ class AirAlertMod(loader.Module):
         self.bot_id = (await self.inline.bot.get_me()).id
         self.me = (await client.get_me()).id
 
-        try:
-            entity = await client.get_entity("t.me/air_alert_ua")
-            if entity.left:
-                await client(JoinChannelRequest(entity))
-        except Exception:
-            logger.error("Can't join t.me/air_alert_ua")
-
-    async def fetch_alerts(self) -> list:
-        """Fetch active alerts from the API."""
-        if not self.api_key:
-            logger.error("API key is not set. Use .setapikey <YOUR_API_KEY> to set it.")
-            return []
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{API_URL}?token={self.api_key}") as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                else:
-                    logger.error(f"Failed to fetch alerts: {resp.status}")
-                    return []
-
-    async def get_ip_region(self) -> str:
-        """Determine user's region based on their IP address."""
-        async with aiohttp.ClientSession() as session:
-            async with session.get(IP_GEO_URL) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("region", "")
-                else:
-                    logger.error(f"Failed to fetch region by IP: {resp.status}")
-                    return ""
+        if self.api_key:
+            self.alerts_client = AlertsClient(token=self.api_key)
 
     async def setapikeycmd(self, message: Message) -> None:
         """Command to set the API key."""
@@ -81,6 +46,7 @@ class AirAlertMod(loader.Module):
 
         self.api_key = api_key
         self.db.set(self.strings["name"], "api_key", self.api_key)
+        self.alerts_client = AlertsClient(token=self.api_key)
         await utils.answer(message, "<b>API ключ успешно установлен!</b>")
 
     async def setregioncmd(self, message: Message) -> None:
@@ -109,15 +75,15 @@ class AirAlertMod(loader.Module):
             await utils.answer(message, "<b>Регион не выбран. Используйте команду .setregion для выбора региона.</b>")
             return
 
-        alerts = await self.fetch_alerts()
+        active_alerts = self.alerts_client.get_air_raid_alert_statuses_by_oblast()
 
-        if not alerts:
+        if not active_alerts:
             await utils.answer(message, "<b>Не удалось получить данные о предупреждениях.</b>")
             return
 
-        active_alerts = [alert for alert in alerts if alert["region"] == self.selected_region]
+        relevant_alerts = [alert for alert in active_alerts if alert["region"] == self.selected_region]
 
-        if active_alerts:
+        if relevant_alerts:
             await utils.answer(message, f"<b>⚠️ Внимание! В регионе {self.selected_region} сейчас воздушная тревога!</b>")
         else:
             await utils.answer(message, f"<b>✅ В регионе {self.selected_region} нет активных воздушных тревог.</b>")
@@ -156,16 +122,17 @@ class AirAlertMod(loader.Module):
             await utils.answer(message, "<b>Чат успешно установлен для перенаправления</b>")
 
     async def watcher(self, message: Message) -> None:
-        """Fetch and forward air alert messages based on IP and region."""
-        alerts = await self.fetch_alerts()
-        user_region = await self.get_ip_region()
-
-        if not alerts:
+        """Fetch and forward air alert messages based on region."""
+        if not self.alerts_client:
+            logger.error("API client is not set. Use .setapikey to configure.")
             return
 
-        relevant_alerts = [
-            alert for alert in alerts if alert["region"] == self.selected_region or "all" in self.regions
-        ]
+        active_alerts = self.alerts_client.get_air_raid_alert_statuses_by_oblast()
+
+        if not active_alerts:
+            return
+
+        relevant_alerts = [alert for alert in active_alerts if alert["region"] == self.selected_region]
 
         if relevant_alerts:
             tasks = [

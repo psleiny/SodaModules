@@ -1,8 +1,9 @@
 import logging
 import requests
 from telethon.tl.types import Message
-from datetime import datetime, time as dtime
+from datetime import datetime, time
 import asyncio
+from time import time as current_time  
 
 from .. import loader, utils
 
@@ -29,14 +30,14 @@ class WeatherMod(loader.Module):
     }
 
     def __init__(self):
-        self.units = "metric"  
+        self.units = "metric" 
         self.lang = "ua"  
         self.cache = {}  
         self.cache_timeout = 600  
-        self.silence_start = dtime(22, 30)  
-        self.silence_end = dtime(6, 30) 
+        self.silence_start = time(22, 30)  
+        self.silence_end = time(6, 30)  
         self.weather_chat_id = None  
-        self.auto_weather_task = None  
+        self.auto_weather_task = None 
 
     async def client_ready(self, client, db) -> None:
         self.db = db
@@ -84,7 +85,8 @@ class WeatherMod(loader.Module):
 
     async def get_weather_info(self, city: str, api_key: str) -> str:
         """Отримати та повернути інформацію про погоду"""
-        if city in self.cache and time() - self.cache[city]["time"] < self.cache_timeout:
+
+        if city in self.cache and current_time() - self.cache[city]["time"] < self.cache_timeout:
             return self.cache[city]["data"]
 
         params = {"q": city, "appid": api_key, "units": self.units, "lang": self.lang}
@@ -96,7 +98,8 @@ class WeatherMod(loader.Module):
 
         data = response.json()
         weather_info = self.extract_weather_details(data)
-        self.cache[city] = {"data": weather_info, "time": time()}
+
+        self.cache[city] = {"data": weather_info, "time": current_time()}
         return weather_info
 
     def extract_weather_details(self, data: dict) -> str:
@@ -140,6 +143,7 @@ class WeatherMod(loader.Module):
         while True:
             now = datetime.now().time()
             if self.silence_start <= now or now < self.silence_end:
+
                 await asyncio.sleep(3600)
                 continue
 

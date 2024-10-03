@@ -1,3 +1,5 @@
+# meta developer: @SodaModules
+
 import logging
 import requests
 from telethon.tl.types import Message
@@ -25,7 +27,7 @@ class WeatherMod(loader.Module):
     }
 
     def __init__(self):
-        self.units = "metric"  # Default temperature unit (Celsius)
+        self.units = "metric"  
 
     async def client_ready(self, client, db) -> None:
         self.db = db
@@ -63,7 +65,6 @@ class WeatherMod(loader.Module):
             await utils.answer(message, self.strings["city_prompt"])
             return
 
-        # OpenWeatherMap API request for current weather
         params = {"q": city, "appid": api_key, "units": self.units}
         try:
             response = requests.get(API_URL_OWM, params=params)
@@ -84,7 +85,7 @@ class WeatherMod(loader.Module):
         pressure = data["main"]["pressure"]
         feels_like = data["main"]["feels_like"]
         cloudiness = data["clouds"]["all"]
-        visibility = data.get("visibility", 10000)  # Default visibility is 10,000 meters
+        visibility = data.get("visibility", 10000)  
         weather_desc = data["weather"][0]["description"]
 
         return self.strings["weather_details"].format(

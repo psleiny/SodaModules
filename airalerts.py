@@ -75,18 +75,17 @@ class AirAlertMod(loader.Module):
             await utils.answer(message, "<b>Регион не выбран. Используйте команду .setregion для выбора региона.</b>")
             return
 
-        active_alerts = self.alerts_client.get_air_raid_alert_statuses_by_oblast()
+        try:
+            alert_status = self.alerts_client.get_air_raid_alert_status(self.selected_region)
 
-        if not active_alerts:
-            await utils.answer(message, "<b>Не удалось получить данные о предупреждениях.</b>")
-            return
+            if alert_status and alert_status.is_active:
+                await utils.answer(message, f"<b>⚠️ Внимание! В регионе {self.selected_region} сейчас воздушная тревога!</b>")
+            else:
+                await utils.answer(message, f"<b>✅ В регионе {self.selected_region} нет активных воздушных тревог.</b>")
 
-        relevant_alerts = [alert for alert in active_alerts if alert["region"] == self.selected_region]
-
-        if relevant_alerts:
-            await utils.answer(message, f"<b>⚠️ Внимание! В регионе {self.selected_region} сейчас воздушная тревога!</b>")
-        else:
-            await utils.answer(message, f"<b>✅ В регионе {self.selected_region} нет активных воздушных тревог.</b>")
+        except Exception as e:
+            logger.error(f"Error fetching alert status: {e}")
+            await utils.answer(message, "<b>Произошла ошибка при получении статуса тревоги.</b>")
 
     async def alertforwardcmd(self, message: Message) -> None:
         """Command for managing forwarding of alerts to other chats."""
@@ -127,19 +126,18 @@ class AirAlertMod(loader.Module):
             logger.error("API client is not set. Use .setapikey to configure.")
             return
 
-        active_alerts = self.alerts_client.get_air_raid_alert_statuses_by_oblast()
+        try:
+            alert_status = self.alerts_client.get_air_raid_alert_status(self.selected_region)
 
-        if not active_alerts:
-            return
+            if alert_status and alert_status.is_active:
+                tasks = [
+                    self.inline.bot.send_message(self.me, f"⚠️ {self.selected_region}: Воздушная тревога!", parse_mode="HTML")
+                ]
+                for chat in self.forwards:
+                    tasks.append(
+                        self.client.send_message(chat, f"⚠️ {self.selected_region}: Воздушная тревога!\n\n" + self.nametag)
+                    )
+                await gather(*tasks)
 
-        relevant_alerts = [alert for alert in active_alerts if alert["region"] == self.selected_region]
-
-        if relevant_alerts:
-            tasks = [
-                self.inline.bot.send_message(self.me, str(relevant_alerts), parse_mode="HTML")
-            ]
-            for chat in self.forwards:
-                tasks.append(
-                    self.client.send_message(chat, str(relevant_alerts) + "\n\n" + self.nametag)
-                )
-            await gather(*tasks)
+        except Exception as e:
+            logger.error(f"Error fetching or forwarding alert: {e}")

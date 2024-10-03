@@ -1,9 +1,12 @@
+# мета-разработчик: @SodaModules
+# разработчик: @STy7w
+
 import logging
 import requests
 from telethon.tl.types import Message
 from datetime import datetime, time
 import asyncio
-from time import time as current_time  # Import time for timestamping cache
+from time import time as current_time  
 
 from .. import loader, utils
 
@@ -34,20 +37,19 @@ class WeatherMod(loader.Module):
     }
 
     def __init__(self):
-        self.units = "metric"  # За замовчуванням Цельсій
-        self.lang = "ua"  # Мова для опису погоди
-        self.cache = {}  # Кеш для зберігання даних
-        self.cache_timeout = 600  # Тривалість кешу (10 хвилин)
-        self.silence_start = time(22, 30)  # Початок періоду тиші
-        self.silence_end = time(6, 30)  # Кінець періоду тиші
-        self.weather_chat_ids = []  # Список ID чатів для погоди
-        self.auto_weather_task = None  # Завдання для автоматичних оновлень
+        self.units = "metric"  
+        self.lang = "ua"  
+        self.cache = {}  
+        self.cache_timeout = 600  
+        self.silence_start = time(22, 30)  
+        self.silence_end = time(6, 30)  
+        self.weather_chat_ids = []  
+        self.auto_weather_task = None  
 
     async def client_ready(self, client, db) -> None:
         self.db = db
         self.client = client
 
-        # Запуск автоматичних оновлень погоди
         if self.auto_weather_task is None:
             self.auto_weather_task = asyncio.create_task(self.auto_weather_updates())
 
@@ -90,7 +92,6 @@ class WeatherMod(loader.Module):
 
     async def get_weather_info(self, city: str, api_key: str) -> str:
         """Отримати та повернути інформацію про погоду"""
-        # Перевіряємо кеш
         if city in self.cache and current_time() - self.cache[city]["time"] < self.cache_timeout:
             return self.cache[city]["data"]
 
@@ -103,7 +104,6 @@ class WeatherMod(loader.Module):
 
         data = response.json()
         weather_info = self.extract_weather_details(data)
-        # Кешуємо результат
         self.cache[city] = {"data": weather_info, "time": current_time()}
         return weather_info
 
@@ -115,7 +115,7 @@ class WeatherMod(loader.Module):
         pressure = data["main"]["pressure"]
         feels_like = data["main"]["feels_like"]
         cloudiness = data["clouds"]["all"]
-        visibility = data.get("visibility", 10000)  # За замовчуванням 10 км
+        visibility = data.get("visibility", 10000)  
         weather_desc = data["weather"][0]["description"]
 
         return self.strings["weather_details"].format(
@@ -170,7 +170,6 @@ class WeatherMod(loader.Module):
         while True:
             now = datetime.now().time()
             if self.silence_start <= now or now < self.silence_end:
-                # Поза періодом тиші (між 22:30 та 6:30)
                 await asyncio.sleep(3600)
                 continue
 
@@ -187,5 +186,4 @@ class WeatherMod(loader.Module):
                     for chat_id in self.weather_chat_ids:
                         await self.client.send_message(chat_id, self.strings["weather_info"].format(city, weather_info))
 
-            # Чекаємо одну годину
             await asyncio.sleep(3600)

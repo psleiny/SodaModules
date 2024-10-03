@@ -1,4 +1,5 @@
 import logging
+import aiohttp
 from asyncio import gather
 from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
 from telethon.tl.functions.channels import JoinChannelRequest
@@ -9,30 +10,30 @@ from ..inline import GeekInlineQuery, rand
 
 logger = logging.getLogger(__name__)
 
-ua = [
-    "Вінницька область", "Волинська область", "Дніпропетровська область", 
-    "Донецька область", "Житомирська область", "Закарпатська область", 
-    "Запорізька область", "Івано-Франківська область", "Київська область", 
-    "Кіровоградська область", "Луганська область", "Львівська область", 
-    "Миколаївська область", "Одеська область", "Полтавська область", 
-    "Рівненська область", "Сумська область", "Тернопільська область", 
-    "Харківська область", "Херсонська область", "Хмельницька область", 
-    "Черкаська область", "Чернівецька область", "Чернігівська область", 
-    "місто Київ", "місто Севастополь"
-]
+API_URL = "https://api.alerts.in.ua/v1/alerts/active.json"
+IP_GEO_URL = "https://ipinfo.io/json"
 
 class AirAlertMod(loader.Module):
-    """🇺🇦 Предупреждение о воздушной тревоге.
-    Нужно быть подписаным на @air_alert_ua и включены уведомления в вашем боте"""
+    """🇺🇦 Air Alert Warning with region selection and API key setup."""
 
     strings = {"name": "AirAlert"}
 
+    def __init__(self):
+        self.regions = []
+        self.nametag = ""
+        self.forwards = []
+        self.api_key = ""
+        self.selected_region = ""
+        self.bot_id = None
+        self.me = None
+
     async def client_ready(self, client, db) -> None:
-        """Join the air alert channel only if not already joined."""
+        """Initialize client, regions, and join alert channel."""
         self.regions = db.get(self.strings["name"], "regions", [])
         self.nametag = db.get(self.strings["name"], "nametag", "")
         self.forwards = db.get(self.strings["name"], "forwards", [])
-
+        self.api_key = db.get(self.strings["name"], "api_key", "")
+        self.selected_region = db.get(self.strings["name"], "selected_region", "")
         self.db = db
         self.client = client
         self.bot_id = (await self.inline.bot.get_me()).id
@@ -40,24 +41,96 @@ class AirAlertMod(loader.Module):
 
         try:
             entity = await client.get_entity("t.me/air_alert_ua")
-            if entity.left:  
+            if entity.left:
                 await client(JoinChannelRequest(entity))
         except Exception:
             logger.error("Can't join t.me/air_alert_ua")
 
-    async def alertforwardcmd(self, message: Message) -> None:
-        """Перенаправление предупреждений в другие чаты.
-        Для добавления/удаления введите команду с ссылкой на чат.
-        Для просмотра чатов введите команду без аргументов.
-        Для установки кастомной таблички введите .alertforward set <text>"""
-        text = utils.get_args_raw(message)
+    async def fetch_alerts(self) -> list:
+        """Fetch active alerts from the API."""
+        if not self.api_key:
+            logger.error("API key is not set. Use .setapikey <YOUR_API_KEY> to set it.")
+            return []
 
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{API_URL}?token={self.api_key}") as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                else:
+                    logger.error(f"Failed to fetch alerts: {resp.status}")
+                    return []
+
+    async def get_ip_region(self) -> str:
+        """Determine user's region based on their IP address."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(IP_GEO_URL) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("region", "")
+                else:
+                    logger.error(f"Failed to fetch region by IP: {resp.status}")
+                    return ""
+
+    async def setapikeycmd(self, message: Message) -> None:
+        """Command to set the API key."""
+        api_key = utils.get_args_raw(message)
+
+        if not api_key:
+            await utils.answer(message, "<b>Введите ваш API ключ после команды: .setapikey <API_KEY></b>")
+            return
+
+        self.api_key = api_key
+        self.db.set(self.strings["name"], "api_key", self.api_key)
+        await utils.answer(message, "<b>API ключ успешно установлен!</b>")
+
+    async def setregioncmd(self, message: Message) -> None:
+        """Command to select the region for notifications."""
+        region = utils.get_args_raw(message)
+
+        if not region:
+            await utils.answer(message, "<b>Введите название региона для установки уведомлений.</b>")
+            return
+
+        if region not in ua:  # `ua` is the list of Ukrainian regions
+            await utils.answer(message, "<b>Неправильный регион. Пожалуйста, выберите корректный регион.</b>")
+            return
+
+        self.selected_region = region
+        self.db.set(self.strings["name"], "selected_region", self.selected_region)
+        await utils.answer(message, f"<b>Регион для уведомлений успешно установлен: <code>{region}</code></b>")
+
+    async def checkalertcmd(self, message: Message) -> None:
+        """Command to check the current alert status for the selected region."""
+        if not self.api_key:
+            await utils.answer(message, "<b>API ключ не установлен. Используйте команду .setapikey.</b>")
+            return
+
+        if not self.selected_region:
+            await utils.answer(message, "<b>Регион не выбран. Используйте команду .setregion для выбора региона.</b>")
+            return
+
+        alerts = await self.fetch_alerts()
+
+        if not alerts:
+            await utils.answer(message, "<b>Не удалось получить данные о предупреждениях.</b>")
+            return
+
+        active_alerts = [alert for alert in alerts if alert["region"] == self.selected_region]
+
+        if active_alerts:
+            await utils.answer(message, f"<b>⚠️ Внимание! В регионе {self.selected_region} сейчас воздушная тревога!</b>")
+        else:
+            await utils.answer(message, f"<b>✅ В регионе {self.selected_region} нет активных воздушных тревог.</b>")
+
+    async def alertforwardcmd(self, message: Message) -> None:
+        """Command for managing forwarding of alerts to other chats."""
+        text = utils.get_args_raw(message)
+        
         if text[:3] == "set":
             self.nametag = text[4:]
             self.db.set(self.strings["name"], "nametag", self.nametag)
             return await utils.answer(
-                message,
-                f"🏷 <b>Табличка успешно установлена: <code>{self.nametag}</code></b>",
+                message, f"🏷 <b>Табличка успешно установлена: <code>{self.nametag}</code></b>"
             )
 
         if not text:
@@ -82,58 +155,24 @@ class AirAlertMod(loader.Module):
             self.db.set(self.strings["name"], "forwards", self.forwards)
             await utils.answer(message, "<b>Чат успешно установлен для перенаправления</b>")
 
-    async def alert_inline_handler(self, query: GeekInlineQuery) -> None:
-        """Optimized region selection handling."""
-        text = query.args
+    async def watcher(self, message: Message) -> None:
+        """Fetch and forward air alert messages based on IP and region."""
+        alerts = await self.fetch_alerts()
+        user_region = await self.get_ip_region()
 
-        if not text:
-            result = ua
-        elif text == "my":
-            result = self.regions
-        else:
-            result = [region for region in ua if text.lower() in region.lower()]
-
-        if not result:
-            await query.e404()
+        if not alerts:
             return
 
-        res = [
-            InlineQueryResultArticle(
-                id=rand(20),
-                title=f"{'✅' if reg in self.regions else '❌'}{reg if reg != 'all' else 'Всі сповіщення'}",
-                description=(
-                    f"Нажмите чтобы {'удалить' if reg in self.regions else 'добавить'}"
-                    if reg != "all"
-                    else (
-                        "🇺🇦 Нажмите чтобы"
-                        f" {'выключить' if 'all' in self.regions else 'включить'} всі"
-                        " сповіщення"
-                    )
-                ),
-                input_message_content=InputTextMessageContent(
-                    f"⌛ Редагування регіону <code>{reg}</code>",
-                    parse_mode="HTML",
-                ),
-            )
-            for reg in result[:50]  
+        relevant_alerts = [
+            alert for alert in alerts if alert["region"] == self.selected_region or "all" in self.regions
         ]
-        await query.answer(res, cache_time=0)
 
-    async def watcher(self, message: Message) -> None:
-        """Forward air alert messages to configured chats immediately and asynchronously."""
-        
-        if (
-            getattr(message, "peer_id", False)
-            and getattr(message.peer_id, "channel_id", 0) == 1766138888
-            and ("all" in self.regions or any(reg in message.raw_text for reg in self.regions))
-        ):
+        if relevant_alerts:
             tasks = [
-                self.inline.bot.send_message(self.me, message.text, parse_mode="HTML")
+                self.inline.bot.send_message(self.me, str(relevant_alerts), parse_mode="HTML")
             ]
-            
             for chat in self.forwards:
                 tasks.append(
-                    self.client.send_message(chat, message.text + "\n\n" + self.nametag)
+                    self.client.send_message(chat, str(relevant_alerts) + "\n\n" + self.nametag)
                 )
-            
-            await gather(*tasks)  
+            await gather(*tasks)

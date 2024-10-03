@@ -1,4 +1,5 @@
-# meta developer: @SodaModules
+# мета-разработчик: @SodaModules
+# разработчик: @STy7w
 
 import datetime
 import logging

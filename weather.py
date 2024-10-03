@@ -27,6 +27,10 @@ class WeatherMod(loader.Module):
         "api_key_set": "🔑 API ключ встановлено!",
         "api_key_invalid": "❗ Невірний API ключ.",
         "api_key_valid": "✅ API ключ дійсний.",
+        "chat_added": "✅ Чат <code>{}</code> додано для оновлень погоди.",
+        "chat_removed": "❌ Чат <code>{}</code> видалено з оновлень погоди.",
+        "chats_list": "📋 Чати для оновлень погоди:\n{}",
+        "no_chats": "🚫 Немає чатів для оновлень погоди.",
     }
 
     def __init__(self):
@@ -36,7 +40,7 @@ class WeatherMod(loader.Module):
         self.cache_timeout = 600  # Тривалість кешу (10 хвилин)
         self.silence_start = time(22, 30)  # Початок періоду тиші
         self.silence_end = time(6, 30)  # Кінець періоду тиші
-        self.weather_chat_id = None  # ID чату для погоди
+        self.weather_chat_ids = []  # Список ID чатів для погоди
         self.auto_weather_task = None  # Завдання для автоматичних оновлень
 
     async def client_ready(self, client, db) -> None:
@@ -135,8 +139,30 @@ class WeatherMod(loader.Module):
     async def setchatcmd(self, message: Message) -> None:
         """Встановити чат для автоматичних оновлень погоди"""
         chat_id = utils.get_chat_id(message)
-        self.weather_chat_id = chat_id
-        await utils.answer(message, f"Чат для оновлень погоди встановлено: {chat_id}")
+        if chat_id not in self.weather_chat_ids:
+            self.weather_chat_ids.append(chat_id)
+            await utils.answer(message, self.strings["chat_added"].format(chat_id))
+        else:
+            await utils.answer(message, f"Чат <code>{chat_id}</code> вже додано.")
+        return
+
+    async def removechatcmd(self, message: Message) -> None:
+        """Видалити чат з автоматичних оновлень погоди"""
+        chat_id = utils.get_chat_id(message)
+        if chat_id in self.weather_chat_ids:
+            self.weather_chat_ids.remove(chat_id)
+            await utils.answer(message, self.strings["chat_removed"].format(chat_id))
+        else:
+            await utils.answer(message, f"Чат <code>{chat_id}</code> не знайдено.")
+        return
+
+    async def listchatscmd(self, message: Message) -> None:
+        """Переглянути список чатів для автоматичних оновлень погоди"""
+        if self.weather_chat_ids:
+            chats = "\n".join([f"• {chat_id}" for chat_id in self.weather_chat_ids])
+            await utils.answer(message, self.strings["chats_list"].format(chats))
+        else:
+            await utils.answer(message, self.strings["no_chats"])
         return
 
     async def auto_weather_updates(self):
@@ -148,18 +174,18 @@ class WeatherMod(loader.Module):
                 await asyncio.sleep(3600)
                 continue
 
-            if self.weather_chat_id:
-                api_key = self.get_api_key()
-                if not api_key:
-                    logger.warning("API ключ не встановлено")
-                    await asyncio.sleep(3600)
-                    continue
+            api_key = self.get_api_key()
+            if not api_key:
+                logger.warning("API ключ не встановлено")
+                await asyncio.sleep(3600)
+                continue
 
-                city = self.db.get(self.strings["name"], "city", "")
-                if city:
-                    weather_info = await self.get_weather_info(city, api_key)
-                    if weather_info:
-                        await self.client.send_message(self.weather_chat_id, self.strings["weather_info"].format(city, weather_info))
+            city = self.db.get(self.strings["name"], "city", "")
+            if city and self.weather_chat_ids:
+                weather_info = await self.get_weather_info(city, api_key)
+                if weather_info:
+                    for chat_id in self.weather_chat_ids:
+                        await self.client.send_message(chat_id, self.strings["weather_info"].format(city, weather_info))
 
             # Чекаємо одну годину
             await asyncio.sleep(3600)

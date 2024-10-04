@@ -38,19 +38,20 @@ class WeatherMod(loader.Module):
 
     def __init__(self):
         self.units = "metric" 
-        self.lang = "ua" 
+        self.lang = "ua"  
         self.cache = {}  
         self.cache_timeout = 600  
         self.silence_start = time(22, 30)  
         self.silence_end = time(6, 30)  
-        self.silent_mode = True  
-        self.weather_chat_ids = []  
-        self.update_frequency = 60  
         self.auto_weather_task = None  
 
     async def client_ready(self, client, db) -> None:
         self.db = db
         self.client = client
+
+        self.weather_chat_ids = self.db.get(self.strings["name"], "chats", [])
+        self.update_frequency = self.db.get(self.strings["name"], "frequency", 60)
+        self.silent_mode = self.db.get(self.strings["name"], "silent_mode", True)
 
         if self.auto_weather_task is None:
             self.auto_weather_task = asyncio.create_task(self.auto_weather_updates())
@@ -116,7 +117,7 @@ class WeatherMod(loader.Module):
         humidity = data["main"]["humidity"]
         pressure = data["main"]["pressure"]
         feels_like = data["main"]["feels_like"]
-        cloudiness = data["clouds"]["all"]  
+        cloudiness = data["clouds"]["all"]
         weather_desc = data["weather"][0]["description"]
 
         return self.strings["weather_details"].format(
@@ -142,6 +143,7 @@ class WeatherMod(loader.Module):
         chat_id = utils.get_chat_id(message)
         if chat_id not in self.weather_chat_ids:
             self.weather_chat_ids.append(chat_id)
+            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)  
             await utils.answer(message, self.strings["chat_added"].format(chat_id))
         else:
             await utils.answer(message, f"Чат <code>{chat_id}</code> вже додано.")
@@ -152,6 +154,7 @@ class WeatherMod(loader.Module):
         chat_id = utils.get_chat_id(message)
         if chat_id in self.weather_chat_ids:
             self.weather_chat_ids.remove(chat_id)
+            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)  
             await utils.answer(message, self.strings["chat_removed"].format(chat_id))
         else:
             await utils.answer(message, f"Чат <code>{chat_id}</code> не знайдено.")
@@ -174,6 +177,7 @@ class WeatherMod(loader.Module):
             if frequency < 1:
                 raise ValueError("Frequency must be positive.")
             self.update_frequency = frequency
+            self.db.set(self.strings["name"], "frequency", frequency)  
             await utils.answer(message, self.strings["frequency_set"].format(frequency))
         except (ValueError, TypeError):
             await utils.answer(message, "❗ Вкажіть правильну кількість хвилин (позитивне ціле число).")
@@ -182,6 +186,7 @@ class WeatherMod(loader.Module):
     async def toggle_silentcmd(self, message: Message) -> None:
         """Увімкнути або вимкнути режим тиші (22:30 - 06:30)"""
         self.silent_mode = not self.silent_mode
+        self.db.set(self.strings["name"], "silent_mode", self.silent_mode) 
         if self.silent_mode:
             await utils.answer(message, self.strings["silent_mode_enabled"])
         else:

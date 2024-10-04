@@ -39,7 +39,7 @@ class AFKMod(loader.Module):
             self._db.set(__name__, "afk", True)
 
         self._db.set(__name__, "gone", time.time())
-        self._db.set(__name__, "ratelimit", [])
+        self._db.set(__name__, "ratelimit", {})  
 
         await self.allmodules.log("afk", data=args or None)
         await utils.answer(message, self.strings("gone", message))
@@ -48,8 +48,7 @@ class AFKMod(loader.Module):
         """Знімає статус AFK"""
         self._db.set(__name__, "afk", False)
         self._db.set(__name__, "gone", None)
-        self._db.set(__name__, "ratelimit", [])
-        self._db.set(__name__, "afk_media", None)
+        self._db.set(__name__, "ratelimit", {}) 
 
         await self.allmodules.log("unafk")
         await utils.answer(message, self.strings("back", message))
@@ -62,7 +61,6 @@ class AFKMod(loader.Module):
             await utils.answer(message, self.strings("media_not_found", message))
             return
 
-        # Зберігаємо вказаний медіа URL
         self._db.set(__name__, "afk_media", args)
         await utils.answer(message, self.strings("media_installed", message))
 
@@ -81,13 +79,14 @@ class AFKMod(loader.Module):
                 return
 
             logger.debug("Вас позначили під час AFK")
-            ratelimit = self._db.get(__name__, "ratelimit", [])
-            if utils.get_chat_id(message) in ratelimit:
-                return
+            ratelimit = self._db.get(__name__, "ratelimit", {})
+
+            chat_id = utils.get_chat_id(message)
+            if ratelimit.get(chat_id):
+                return 
             else:
-                self._db.setdefault(__name__, {}).setdefault("ratelimit", []).append(
-                    utils.get_chat_id(message)
-                )
+                ratelimit[chat_id] = True
+                self._db.set(__name__, "ratelimit", ratelimit)
                 self._db.save()
 
             user = await utils.get_user(message)
@@ -106,10 +105,9 @@ class AFKMod(loader.Module):
             elif afk_state is not False:
                 ret = self.strings("afk_reason", message).format(diff, afk_state)
 
-            # Відправляємо відповідь AFK разом з медіа, якщо воно є
             media = self._db.get(__name__, "afk_media")
             if media:
-                await message.reply(ret, file=media)  # Надсилаємо медіа безпосередньо
+                await message.reply(ret, file=media) 
             else:
                 await utils.answer(message, ret, reply_to=message)
 

@@ -33,7 +33,7 @@ class WeatherMod(loader.Module):
         "frequency_set": "🔄 Частота оновлень встановлена: кожні {} хвилин.",
         "silent_mode_enabled": "🔕 Режим тиші увімкнено (22:30 - 06:30).",
         "silent_mode_disabled": "🔔 Режим тиші вимкнено.",
-        "weather_info_premium": "<b>🌤 Погода в {}: {}</b>",  
+        "weather_info_premium": "<b>🌤 Погода в {}: {}</b>", 
         "weather_details_premium": "🌡 Температура: {}°C\n💨 Вітер: {} м/с\n💧 Вологість: {}%\n🔴 Тиск: {} hPa\n🤧 Відчувається як: {}°C\n☁️ Хмарність: {}%\n🎯 {}",
     }
 
@@ -62,6 +62,10 @@ class WeatherMod(loader.Module):
     def get_api_key(self) -> str:
         """Отримати збережений API ключ OpenWeatherMap."""
         return self.db.get(self.strings["name"], "api_key", "")
+
+    def get_premium_users(self):
+        """Return a list of premium users. For now, this is just an empty list to avoid crashes."""
+        return []
 
     def get_weather_emoji(self, description: str) -> str:
         """Повернути відповідний емодзі залежно від опису погоди"""
@@ -110,7 +114,11 @@ class WeatherMod(loader.Module):
 
         weather_info = await self.get_weather_info(city, api_key)
         if weather_info:
-            premium = message.sender_id in self.get_premium_users()  
+            try:
+                premium = message.sender_id in self.get_premium_users()
+            except AttributeError:
+                premium = False  
+
             if premium:
                 await utils.answer(message, self.strings["weather_info_premium"].format(city, weather_info))
             else:

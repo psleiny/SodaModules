@@ -3,7 +3,7 @@ import requests
 from telethon.tl.types import Message
 from datetime import datetime, time
 import asyncio
-from time import time as current_time  
+from time import time as current_time
 
 from .. import loader, utils
 
@@ -13,7 +13,7 @@ API_URL_OWM = "https://api.openweathermap.org/data/2.5/weather"
 
 
 class WeatherMod(loader.Module):
-    """Модуль погоди з автоматичними оновленнями щогодини"""
+    """Модуль погоди з автоматичними оновленнями та пам'яттю налаштувань"""
 
     strings = {
         "name": "Погода",
@@ -45,13 +45,15 @@ class WeatherMod(loader.Module):
         self.silence_end = time(6, 30)  
         self.auto_weather_task = None  
 
-    async def client_ready(self, client, db) -> None:
+    async def client_ready(self, client, db):
+        """Ініціалізація після готовності клієнта"""
         self.db = db
         self.client = client
 
         self.weather_chat_ids = self.db.get(self.strings["name"], "chats", [])
-        self.update_frequency = self.db.get(self.strings["name"], "frequency", 60)
+        self.update_frequency = self.db.get(self.strings["name"], "frequency", 60)  
         self.silent_mode = self.db.get(self.strings["name"], "silent_mode", True)
+        self.city = self.db.get(self.strings["name"], "city", "")
 
         if self.auto_weather_task is None:
             self.auto_weather_task = asyncio.create_task(self.auto_weather_updates())
@@ -71,9 +73,9 @@ class WeatherMod(loader.Module):
         """Встановити місто за замовчуванням (Set default city for forecast)"""
         if args := utils.get_args_raw(message):
             self.db.set(self.strings["name"], "city", args)
+            self.city = args
 
-        city = self.db.get(self.strings["name"], "city", self.strings["no_city"])
-        await utils.answer(message, self.strings["city_set"].format(city))
+        await utils.answer(message, self.strings["city_set"].format(self.city))
         return
 
     async def weathercmd(self, message: Message) -> None:
@@ -83,7 +85,7 @@ class WeatherMod(loader.Module):
             await utils.answer(message, self.strings["api_key_missing"])
             return
 
-        city = utils.get_args_raw(message) or self.db.get(self.strings["name"], "city", "")
+        city = utils.get_args_raw(message) or self.city
         if not city:
             await utils.answer(message, self.strings["city_prompt"])
             return
@@ -143,7 +145,7 @@ class WeatherMod(loader.Module):
         chat_id = utils.get_chat_id(message)
         if chat_id not in self.weather_chat_ids:
             self.weather_chat_ids.append(chat_id)
-            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)  
+            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)
             await utils.answer(message, self.strings["chat_added"].format(chat_id))
         else:
             await utils.answer(message, f"Чат <code>{chat_id}</code> вже додано.")
@@ -154,7 +156,7 @@ class WeatherMod(loader.Module):
         chat_id = utils.get_chat_id(message)
         if chat_id in self.weather_chat_ids:
             self.weather_chat_ids.remove(chat_id)
-            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)  
+            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)
             await utils.answer(message, self.strings["chat_removed"].format(chat_id))
         else:
             await utils.answer(message, f"Чат <code>{chat_id}</code> не знайдено.")
@@ -175,9 +177,9 @@ class WeatherMod(loader.Module):
         try:
             frequency = int(args)
             if frequency < 1:
-                raise ValueError("Frequency must be positive.")
+                raise ValueError("Частота повинна бути більше 0.")
             self.update_frequency = frequency
-            self.db.set(self.strings["name"], "frequency", frequency) 
+            self.db.set(self.strings["name"], "frequency", frequency)
             await utils.answer(message, self.strings["frequency_set"].format(frequency))
         except (ValueError, TypeError):
             await utils.answer(message, "❗ Вкажіть правильну кількість хвилин (позитивне ціле число).")
@@ -186,7 +188,7 @@ class WeatherMod(loader.Module):
     async def toggle_silentcmd(self, message: Message) -> None:
         """Увімкнути або вимкнути режим тиші (22:30 - 06:30)"""
         self.silent_mode = not self.silent_mode
-        self.db.set(self.strings["name"], "silent_mode", self.silent_mode)  
+        self.db.set(self.strings["name"], "silent_mode", self.silent_mode)
         if self.silent_mode:
             await utils.answer(message, self.strings["silent_mode_enabled"])
         else:
@@ -194,7 +196,7 @@ class WeatherMod(loader.Module):
         return
 
     async def auto_weather_updates(self):
-        """Автоматичні щогодинні оновлення погоди"""
+        """Автоматичні оновлення погоди"""
         while True:
             now = datetime.now().time()
             if self.silent_mode and (self.silence_start <= now or now < self.silence_end):

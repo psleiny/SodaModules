@@ -21,7 +21,7 @@ class WeatherMod(loader.Module):
         "no_city": "🚫 Місто не встановлено",
         "city_prompt": "❗ Будь ласка, вкажіть місто",
         "weather_info": "<b>Погода в {}: {}</b>",
-        "weather_details": "🌡 Температура: {}°C\n💨 Вітер: {} м/с\n💧 Вологість: {}%\n🔴 Тиск: {} hPa\n🤧 Відчувається як: {}°C\n☁️ Хмарність: {}%\n👁️ Видимість: {} м",
+        "weather_details": "🌡 Температура: {}°C\n💨 Вітер: {} м/с\n💧 Вологість: {}%\n🔴 Тиск: {} hPa\n🤧 Відчувається як: {}°C\n☁️ Хмарність: {}%",
         "invalid_city": "❗ Місто не знайдено",
         "api_key_missing": "❗ API ключ OpenWeatherMap не встановлено",
         "api_key_set": "🔑 API ключ встановлено!",
@@ -37,7 +37,7 @@ class WeatherMod(loader.Module):
     }
 
     def __init__(self):
-        self.units = "metric" 
+        self.units = "metric"  
         self.lang = "ua"  
         self.cache = {}  
         self.cache_timeout = 600  
@@ -121,7 +121,7 @@ class WeatherMod(loader.Module):
         weather_desc = data["weather"][0]["description"]
 
         return self.strings["weather_details"].format(
-            temp, wind_speed, humidity, pressure, feels_like, cloudiness, visibility
+            temp, wind_speed, humidity, pressure, feels_like, cloudiness
         ) + f"\n{weather_desc}"
 
     async def checkapikeycmd(self, message: Message) -> None:
@@ -177,7 +177,7 @@ class WeatherMod(loader.Module):
             if frequency < 1:
                 raise ValueError("Frequency must be positive.")
             self.update_frequency = frequency
-            self.db.set(self.strings["name"], "frequency", frequency)  
+            self.db.set(self.strings["name"], "frequency", frequency) 
             await utils.answer(message, self.strings["frequency_set"].format(frequency))
         except (ValueError, TypeError):
             await utils.answer(message, "❗ Вкажіть правильну кількість хвилин (позитивне ціле число).")
@@ -186,7 +186,7 @@ class WeatherMod(loader.Module):
     async def toggle_silentcmd(self, message: Message) -> None:
         """Увімкнути або вимкнути режим тиші (22:30 - 06:30)"""
         self.silent_mode = not self.silent_mode
-        self.db.set(self.strings["name"], "silent_mode", self.silent_mode) 
+        self.db.set(self.strings["name"], "silent_mode", self.silent_mode)  
         if self.silent_mode:
             await utils.answer(message, self.strings["silent_mode_enabled"])
         else:

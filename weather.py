@@ -1,3 +1,5 @@
+# meta developer: @SodaModules
+
 import logging
 import requests
 from telethon.tl.types import Message
@@ -10,25 +12,23 @@ from .. import loader, utils
 logger = logging.getLogger(__name__)
 
 API_URL_OWM = "https://api.openweathermap.org/data/2.5/weather"
-API_URL_YRNO = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
-API_URL_OPENMETEO = "https://api.open-meteo.com/v1/forecast"
+
 
 class WeatherMod(loader.Module):
-    """Модуль погоди з кількома постачальниками (OWM, Yr.no, Open-Meteo) та обробкою недоступності сервісів"""
+    """Модуль погоди з автоматичними оновленнями та пам'яттю налаштувань"""
 
     strings = {
         "name": "Погода",
         "city_set": "<b>🏙 Ваше поточне місто: <code>{}</code></b>",
         "no_city": "🚫 Місто не встановлено",
         "city_prompt": "❗ Будь ласка, вкажіть місто",
-        "weather_info": "<b>Погода в {} (приблизно): {}</b>",
+        "weather_info": "<b>Погода в {}: {}</b>",
         "weather_details": "🌡 Температура: {}°C\n💨 Вітер: {} м/с\n💧 Вологість: {}%\n🔴 Тиск: {} hPa\n🤧 Відчувається як: {}°C\n☁️ Хмарність: {}%",
         "invalid_city": "❗ Місто не знайдено",
-        "api_key_missing": "❗ API ключ не встановлено",
-        "api_key_set": "🔑 API ключ встановлено для {}!",
-        "service_unavailable": "❗ Сервіс {} тимчасово недоступний. Перехід до наступного...",
-        "no_service_available": "❗ Жоден із сервісів погоди недоступний.",
-        "provider_set": "✅ Постачальник погоди встановлено на {}",
+        "api_key_missing": "❗ API ключ OpenWeatherMap не встановлено",
+        "api_key_set": "🔑 API ключ встановлено!",
+        "api_key_invalid": "❗ Невірний API ключ.",
+        "api_key_valid": "✅ API ключ дійсний.",
         "chat_added": "✅ Чат <code>{}</code> додано для оновлень погоди.",
         "chat_removed": "❌ Чат <code>{}</code> видалено з оновлень погоди.",
         "chats_list": "📋 Чати для оновлень погоди:\n{}",
@@ -39,14 +39,13 @@ class WeatherMod(loader.Module):
     }
 
     def __init__(self):
-        self.units = "metric" 
+        self.units = "metric"  
         self.lang = "ua"  
         self.cache = {}  
         self.cache_timeout = 600  
         self.silence_start = time(22, 30)  
         self.silence_end = time(6, 30)  
         self.auto_weather_task = None  
-        self.providers = ["owm", "yrno", "openmeteo"]  
 
     async def client_ready(self, client, db):
         """Ініціалізація після готовності клієнта"""
@@ -54,39 +53,23 @@ class WeatherMod(loader.Module):
         self.client = client
 
         self.weather_chat_ids = self.db.get(self.strings["name"], "chats", [])
-        self.update_frequency = self.db.get(self.strings["name"], "frequency", 60)
+        self.update_frequency = self.db.get(self.strings["name"], "frequency", 60)  
         self.silent_mode = self.db.get(self.strings["name"], "silent_mode", True)
         self.city = self.db.get(self.strings["name"], "city", "")
-        self.current_provider = self.db.get(self.strings["name"], "provider", "owm")  
 
         if self.auto_weather_task is None:
             self.auto_weather_task = asyncio.create_task(self.auto_weather_updates())
 
-    def get_api_key(self, provider: str) -> str:
-        """Отримати збережений API ключ для обраного постачальника."""
-        return self.db.get(self.strings["name"], f"{provider}_api_key", "")
-
-    async def setprovidercmd(self, message: Message) -> None:
-        """Встановити постачальника прогнозу погоди"""
-        provider = utils.get_args_raw(message).lower()
-        if provider not in self.providers:
-            await utils.answer(message, f"❗ Невідомий постачальник. Доступні: {', '.join(self.providers)}.")
-            return
-
-        self.db.set(self.strings["name"], "provider", provider)
-        self.current_provider = provider
-        await utils.answer(message, self.strings["provider_set"].format(provider))
+    def get_api_key(self) -> str:
+        """Отримати збережений API ключ OpenWeatherMap."""
+        return self.db.get(self.strings["name"], "api_key", "")
 
     async def weatherkeycmd(self, message: Message) -> None:
-        """Встановити API ключ для поточного постачальника"""
-        args = utils.get_args_raw(message)
-        if not args:
-            await utils.answer(message, self.strings["api_key_missing"])
-            return
-
-        provider = self.current_provider
-        self.db.set(self.strings["name"], f"{provider}_api_key", args)
-        await utils.answer(message, self.strings["api_key_set"].format(provider))
+        """Встановити API ключ OpenWeatherMap"""
+        if args := utils.get_args_raw(message):
+            self.db.set(self.strings["name"], "api_key", args)
+            await utils.answer(message, self.strings["api_key_set"])
+        return
 
     async def weathercitycmd(self, message: Message) -> None:
         """Встановити місто за замовчуванням (Set default city for forecast)"""
@@ -99,127 +82,120 @@ class WeatherMod(loader.Module):
 
     async def weathercmd(self, message: Message) -> None:
         """Прогноз погоди для вказаного міста (Current weather for the provided city)"""
+        api_key = self.get_api_key()
+        if not api_key:
+            await utils.answer(message, self.strings["api_key_missing"])
+            return
+
         city = utils.get_args_raw(message) or self.city
         if not city:
             await utils.answer(message, self.strings["city_prompt"])
             return
 
-        weather_info = await self.get_weather_info(city)
+        weather_info = await self.get_weather_info(city, api_key)
         if weather_info:
-            await utils.answer(message, weather_info)
-        else:
-            await utils.answer(message, self.strings["no_service_available"])
+            await utils.answer(message, self.strings["weather_info"].format(city, weather_info))
         return
 
-    async def get_weather_info(self, city: str) -> str:
-        """Отримати та повернути інформацію про погоду від доступного постачальника"""
-        results = []
-        for provider in self.providers:
-            try:
-                api_key = self.get_api_key(provider)
-                if provider == "owm":
-                    result = await self.get_weather_from_owm(city, api_key)
-                elif provider == "yrno":
-                    result = await self.get_weather_from_yrno(city)
-                elif provider == "openmeteo":
-                    result = await self.get_weather_from_openmeteo(city)
-                if result:
-                    results.append(result)
-            except Exception as e:
-                logger.error(f"{provider} failed: {e}")
-                await self.client.send_message(self.client, self.strings["service_unavailable"].format(provider))
-                continue
-
-        if not results:
-            return None
-
-        avg_temp = sum(r["temp"] for r in results) / len(results)
-        avg_wind = sum(r["wind_speed"] for r in results) / len(results)
-        avg_humidity = sum(r["humidity"] for r in results) / len(results)
-        avg_pressure = sum(r["pressure"] for r in results) / len(results)
-        avg_feels_like = sum(r["feels_like"] for r in results) / len(results)
-        avg_cloudiness = sum(r["cloudiness"] for r in results) / len(results)
-
-        return self.strings["weather_details"].format(
-            round(avg_temp, 1), round(avg_wind, 1), round(avg_humidity, 1),
-            round(avg_pressure, 1), round(avg_feels_like, 1), round(avg_cloudiness, 1)
-        )
-
-    async def get_weather_from_owm(self, city: str, api_key: str) -> dict:
-        """Отримати погоду з OpenWeatherMap"""
-        if not api_key:
-            raise ValueError("API ключ OWM не встановлено")
+    async def get_weather_info(self, city: str, api_key: str) -> str:
+        """Отримати та повернути інформацію про погоду"""
+        if city in self.cache and current_time() - self.cache[city]["time"] < self.cache_timeout:
+            return self.cache[city]["data"]
 
         params = {"q": city, "appid": api_key, "units": self.units, "lang": self.lang}
-        response = requests.get(API_URL_OWM, params=params)
-        response.raise_for_status()
+        try:
+            response = requests.get(API_URL_OWM, params=params)
+            response.raise_for_status()
+        except requests.exceptions.RequestException:
+            return self.strings["invalid_city"]
+
         data = response.json()
+        weather_info = self.extract_weather_details(data)
+        self.cache[city] = {"data": weather_info, "time": current_time()}
+        return weather_info
 
-        return {
-            "temp": data["main"]["temp"],
-            "wind_speed": data["wind"]["speed"],
-            "humidity": data["main"]["humidity"],
-            "pressure": data["main"]["pressure"],
-            "feels_like": data["main"]["feels_like"],
-            "cloudiness": data["clouds"]["all"]
-        }
+    def extract_weather_details(self, data: dict) -> str:
+        """Витягти та форматувати деталі погоди з даних OpenWeatherMap"""
+        temp = data["main"]["temp"]
+        wind_speed = data["wind"]["speed"]
+        humidity = data["main"]["humidity"]
+        pressure = data["main"]["pressure"]
+        feels_like = data["main"]["feels_like"]
+        cloudiness = data["clouds"]["all"]
+        weather_desc = data["weather"][0]["description"]
 
-    async def get_weather_from_yrno(self, city: str) -> dict:
-        """Отримати погоду з Yr.no"""
-        location_coords = self.get_city_coordinates(city)
-        if not location_coords:
-            raise ValueError("Координати міста не знайдено")
+        return self.strings["weather_details"].format(
+            temp, wind_speed, humidity, pressure, feels_like, cloudiness
+        ) + f"\n{weather_desc}"
 
-        lat, lon = location_coords
-        headers = {"User-Agent": "MyWeatherBot/1.0"}
-        response = requests.get(f"{API_URL_YRNO}?lat={lat}&lon={lon}", headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    async def checkapikeycmd(self, message: Message) -> None:
+        """Перевірити, чи дійсний API ключ."""
+        api_key = self.get_api_key()
+        if not api_key:
+            await utils.answer(message, self.strings["api_key_missing"])
+            return
 
-        timeseries = data["properties"]["timeseries"][0]["data"]["instant"]["details"]
-        return {
-            "temp": timeseries["air_temperature"],
-            "wind_speed": timeseries["wind_speed"],
-            "humidity": timeseries["relative_humidity"],
-            "pressure": timeseries["air_pressure_at_sea_level"],
-            "feels_like": timeseries["air_temperature"],  
-            "cloudiness": timeseries.get("cloud_area_fraction", 0)
-        }
+        try:
+            response = requests.get(API_URL_OWM, params={"q": "London", "appid": api_key, "units": self.units})
+            response.raise_for_status()
+            await utils.answer(message, self.strings["api_key_valid"])
+        except requests.exceptions.HTTPError:
+            await utils.answer(message, self.strings["api_key_invalid"])
 
-    async def get_weather_from_openmeteo(self, city: str) -> dict:
-        """Отримати погоду з Open-Meteo (немає потреби в API ключі)"""
-        location_coords = self.get_city_coordinates(city)
-        if not location_coords:
-            raise ValueError("Координати міста не знайдено")
+    async def setchatcmd(self, message: Message) -> None:
+        """Встановити чат для автоматичних оновлень погоди"""
+        chat_id = utils.get_chat_id(message)
+        if chat_id not in self.weather_chat_ids:
+            self.weather_chat_ids.append(chat_id)
+            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)
+            await utils.answer(message, self.strings["chat_added"].format(chat_id))
+        else:
+            await utils.answer(message, f"Чат <code>{chat_id}</code> вже додано.")
+        return
 
-        lat, lon = location_coords
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "current_weather": True
-        }
-        response = requests.get(API_URL_OPENMETEO, params=params)
-        response.raise_for_status()
-        data = response.json()
+    async def removechatcmd(self, message: Message) -> None:
+        """Видалити чат з автоматичних оновлень погоди"""
+        chat_id = utils.get_chat_id(message)
+        if chat_id in self.weather_chat_ids:
+            self.weather_chat_ids.remove(chat_id)
+            self.db.set(self.strings["name"], "chats", self.weather_chat_ids)
+            await utils.answer(message, self.strings["chat_removed"].format(chat_id))
+        else:
+            await utils.answer(message, f"Чат <code>{chat_id}</code> не знайдено.")
+        return
 
-        current_weather = data["current_weather"]
-        return {
-            "temp": current_weather["temperature"],
-            "wind_speed": current_weather["windspeed"],
-            "humidity": 0,  
-            "pressure": current_weather["pressure"],
-            "feels_like": current_weather["temperature"],  
-            "cloudiness": 0 
-        }
+    async def listchatscmd(self, message: Message) -> None:
+        """Переглянути список чатів для автоматичних оновлень погоди"""
+        if self.weather_chat_ids:
+            chats = "\n".join([f"• {chat_id}" for chat_id in self.weather_chat_ids])
+            await utils.answer(message, self.strings["chats_list"].format(chats))
+        else:
+            await utils.answer(message, self.strings["no_chats"])
+        return
 
-    def get_city_coordinates(self, city: str) -> tuple:
-        """Отримати координати міста для сервісів (вигаданий метод для прикладу)"""
-        city_coords_map = {
-            "kyiv": (50.4501, 30.5234),
-            "london": (51.5074, -0.1278),
-            "new york": (40.7128, -74.0060)
-        }
-        return city_coords_map.get(city.lower())
+    async def setfrequencycmd(self, message: Message) -> None:
+        """Встановити частоту оновлень погоди (в хвилинах)"""
+        args = utils.get_args_raw(message)
+        try:
+            frequency = int(args)
+            if frequency < 1:
+                raise ValueError("Частота повинна бути більше 0.")
+            self.update_frequency = frequency
+            self.db.set(self.strings["name"], "frequency", frequency)
+            await utils.answer(message, self.strings["frequency_set"].format(frequency))
+        except (ValueError, TypeError):
+            await utils.answer(message, "❗ Вкажіть правильну кількість хвилин (позитивне ціле число).")
+        return
+
+    async def toggle_silentcmd(self, message: Message) -> None:
+        """Увімкнути або вимкнути режим тиші (22:30 - 06:30)"""
+        self.silent_mode = not self.silent_mode
+        self.db.set(self.strings["name"], "silent_mode", self.silent_mode)
+        if self.silent_mode:
+            await utils.answer(message, self.strings["silent_mode_enabled"])
+        else:
+            await utils.answer(message, self.strings["silent_mode_disabled"])
+        return
 
     async def auto_weather_updates(self):
         """Автоматичні оновлення погоди"""
@@ -229,15 +205,15 @@ class WeatherMod(loader.Module):
                 await asyncio.sleep(self.update_frequency * 60)
                 continue
 
-            api_key = self.get_api_key(self.current_provider)
-            if not api_key and self.current_provider != "yrno" and self.current_provider != "openmeteo":
-                logger.warning(f"API ключ для {self.current_provider} не встановлено")
+            api_key = self.get_api_key()
+            if not api_key:
+                logger.warning("API ключ не встановлено")
                 await asyncio.sleep(self.update_frequency * 60)
                 continue
 
             city = self.db.get(self.strings["name"], "city", "")
             if city and self.weather_chat_ids:
-                weather_info = await self.get_weather_info(city)
+                weather_info = await self.get_weather_info(city, api_key)
                 if weather_info:
                     for chat_id in self.weather_chat_ids:
                         await self.client.send_message(chat_id, self.strings["weather_info"].format(city, weather_info))

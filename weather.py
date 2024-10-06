@@ -1,8 +1,8 @@
-# meta developer: @SodaModules
+# meta developer: @lir1mod
 
 import logging
 import aiohttp
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 import asyncio
 from time import time as current_time
 
@@ -22,7 +22,8 @@ class WeatherMod(loader.Module):
         "no_city": "🚫 Місто не встановлено.",
         "city_prompt": "❗ Будь ласка, вкажіть місто.",
         "weather_info": "<b>Погода в {}: {}</b>",
-        "weather_details": "🌡 Температура: {}°C\n💨 Вітер: {} м/с\n💧 Вологість: {}%\n🔴 Тиск: {} hPa\n🤧 Відчувається як: {}°C\n☁️ Хмарність: {}%\n🌞 УФ-індекс: {}\n👁 Видимість: {} м",
+        "weather_details": "🌡 Температура: {}°C\n💨 Вітер: {} м/с\n💧 Вологість: {}%\n🔴 Тиск: {} hPa\n🤧 Відчувається як: {}°C\n☁️ Хмарність: {}%",
+        "premium_weather_details": "🌡 Температура: {}°C\n💨 Вітер: {} м/с\n💧 Вологість: {}%\n🔴 Тиск: {} hPa\n🤧 Відчувається як: {}°C\n☁️ Хмарність: {}%\n🎯 {}",
         "invalid_city": "❗ Місто не знайдено.",
         "api_key_missing": "❗ API ключ OpenWeatherMap не встановлено.",
         "api_key_set": "🔑 API ключ встановлено!",
@@ -39,7 +40,7 @@ class WeatherMod(loader.Module):
     }
 
     def __init__(self):
-        self.units = "metric"  
+        self.units = "metric" 
         self.lang = "ua"  
         self.cache = {}  
         self.cache_timeout = 600  
@@ -105,12 +106,12 @@ class WeatherMod(loader.Module):
             await utils.answer(message, self.strings["city_prompt"])
             return
 
-        weather_info = await self.get_weather_info(city, api_key)
+        weather_info = await self.get_weather_info(city, api_key, message.sender_id)
         if weather_info:
             await utils.answer(message, self.strings["weather_info"].format(city, weather_info))
         return
 
-    async def get_weather_info(self, city: str, api_key: str) -> str:
+    async def get_weather_info(self, city: str, api_key: str, user_id: int) -> str:
         """Отримати та повернути інформацію про погоду з OpenWeatherMap."""
         if self.api_requests_today >= API_LIMIT:
             logger.warning("Ліміт запитів на сьогодні перевищено.")
@@ -139,11 +140,11 @@ class WeatherMod(loader.Module):
             logger.error(f"Помилка API запиту: {str(e)}")
             return self.strings["invalid_city"]
 
-        weather_info = self.extract_weather_details(data)
+        weather_info = self.extract_weather_details(data, user_id)
         self.cache[city] = {"data": weather_info, "time": current_time()}
         return weather_info
 
-    def extract_weather_details(self, data: dict) -> str:
+    def extract_weather_details(self, data: dict, user_id: int) -> str:
         """Витягти та форматувати деталі погоди з OpenWeatherMap."""
         temp = data["main"]["temp"]
         wind_speed = data["wind"]["speed"]
@@ -151,14 +152,18 @@ class WeatherMod(loader.Module):
         pressure = data["main"]["pressure"]
         feels_like = data["main"]["feels_like"]
         cloudiness = data["clouds"]["all"]
-        visibility = data.get("visibility", 0)  
-        uv_index = data.get("uvi", "Н/Д")  
         weather_desc = data["weather"][0]["description"]
 
         weather_emoji = self.get_weather_emoji(weather_desc)
-        return self.strings["weather_details"].format(
-            temp, wind_speed, humidity, pressure, feels_like, cloudiness, uv_index, visibility
-        ) + f"\n{weather_emoji} {weather_desc}"
+
+        if self.is_premium_user(user_id):
+            return self.strings["premium_weather_details"].format(
+                temp, wind_speed, humidity, pressure, feels_like, cloudiness, weather_emoji, weather_desc
+            )
+        else:
+            return self.strings["weather_details"].format(
+                temp, wind_speed, humidity, pressure, feels_like, cloudiness
+            )
 
     def get_weather_emoji(self, description: str) -> str:
         """Повернути відповідний емодзі залежно від опису погоди."""
@@ -171,6 +176,11 @@ class WeatherMod(loader.Module):
         elif "сніг" in description.lower():
             return "❄️"
         return "🌡"
+
+    def is_premium_user(self, user_id: int) -> bool:
+        """Перевірити, чи є користувач підписником Telegram Premium."""
+        user = self.client.get_entity(user_id)
+        return getattr(user, "premium", False)
 
     async def checkapikeycmd(self, message) -> None:
         """Перевірити, чи дійсний API ключ."""
@@ -259,7 +269,7 @@ class WeatherMod(loader.Module):
 
             city = self.db.get(self.strings["name"], "city", "")
             if city and self.weather_chat_ids:
-                weather_info = await self.get_weather_info(city, api_key)
+                weather_info = await self.get_weather_info(city, api_key, 0) 
                 if weather_info:
                     await asyncio.gather(*(self.client.send_message(chat_id, self.strings["weather_info"].format(city, weather_info)) for chat_id in self.weather_chat_ids))
 

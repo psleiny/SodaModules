@@ -11,4 +11,4 @@ correctionmozg
 voicy
 weather
 afk_with_gif
-currency converter
+currency_converter

@@ -11,9 +11,10 @@ from .. import loader, utils
 logger = logging.getLogger(__name__)
 
 API_URL_OWM = "https://api.openweathermap.org/data/2.5/weather"
-API_LIMIT = 50000  
+API_LIMIT = 50000  # Максимальна кількість запитів на день для безкоштовного плану
 
 class WeatherMod(loader.Module):
+    """Модуль погоди з автоматичними оновленнями та пам'яттю налаштувань."""
 
     strings = {
         "name": "Погода",
@@ -44,11 +45,12 @@ class WeatherMod(loader.Module):
         self.cache = {}  
         self.cache_timeout = 600  
         self.silence_start = time(22, 30)  
-        self.silence_end = time(6, 30)  
+        self.silence_end = time(6, 30) 
         self.auto_weather_task = None  
         self.api_requests_today = 0  
 
     async def client_ready(self, client, db):
+        """Ініціалізація після готовності клієнта."""
         self.db = db
         self.client = client
 
@@ -68,19 +70,23 @@ class WeatherMod(loader.Module):
             self.auto_weather_task = asyncio.create_task(self.auto_weather_updates())
 
     def get_api_key(self) -> str:
+        """Отримати збережений API ключ OpenWeatherMap."""
         return self.db.get(self.strings["name"], "api_key", "")
 
     def is_silent_period(self, now=None) -> bool:
+        """Перевірити, чи зараз режим тиші."""
         now = now or datetime.now().time()
         return self.silent_mode and (self.silence_start <= now or now < self.silence_end)
 
     async def weatherkeycmd(self, message) -> None:
+        """Встановити API ключ OpenWeatherMap."""
         if args := utils.get_args_raw(message):
             self.db.set(self.strings["name"], "api_key", args)
             await utils.answer(message, self.strings["api_key_set"])
         return
 
     async def weathercitycmd(self, message) -> None:
+        """Встановити місто за замовчуванням."""
         if args := utils.get_args_raw(message):
             self.db.set(self.strings["name"], "city", args)
             self.city = args
@@ -89,6 +95,7 @@ class WeatherMod(loader.Module):
         return
 
     async def weathercmd(self, message) -> None:
+        """Отримати прогноз погоди для вказаного міста."""
         api_key = self.get_api_key()
         if not api_key:
             await utils.answer(message, self.strings["api_key_missing"])
@@ -105,6 +112,7 @@ class WeatherMod(loader.Module):
         return
 
     async def get_weather_info(self, city: str, api_key: str, user_id: int) -> str:
+        """Отримати та повернути інформацію про погоду з OpenWeatherMap."""
         if self.api_requests_today >= API_LIMIT:
             logger.warning("Ліміт запитів на сьогодні перевищено.")
             return self.strings["api_limit_exceeded"]
@@ -137,6 +145,7 @@ class WeatherMod(loader.Module):
         return weather_info
 
     def extract_weather_details(self, data: dict, user_id: int) -> str:
+        """Витягти та форматувати деталі погоди з OpenWeatherMap."""
         temp = data["main"]["temp"]
         wind_speed = data["wind"]["speed"]
         humidity = data["main"]["humidity"]
@@ -157,6 +166,7 @@ class WeatherMod(loader.Module):
             )
 
     def get_weather_emoji(self, description: str) -> str:
+        """Повернути відповідний емодзі залежно від опису погоди."""
         if "дощ" in description.lower():
             return "🌧️"
         elif "ясно" in description.lower():
@@ -168,10 +178,12 @@ class WeatherMod(loader.Module):
         return "🌡"
 
     def is_premium_user(self, user_id: int) -> bool:
+        """Перевірити, чи є користувач підписником Telegram Premium."""
         user = self.client.get_entity(user_id)
         return getattr(user, "premium", False)
 
     async def checkapikeycmd(self, message) -> None:
+        """Перевірити, чи дійсний API ключ."""
         api_key = self.get_api_key()
         if not api_key:
             await utils.answer(message, self.strings["api_key_missing"])
@@ -188,6 +200,7 @@ class WeatherMod(loader.Module):
             await utils.answer(message, self.strings["api_key_invalid"])
 
     async def setchatcmd(self, message) -> None:
+        """Встановити чат для автоматичних оновлень погоди."""
         chat_id = utils.get_chat_id(message)
         if chat_id not in self.weather_chat_ids:
             self.weather_chat_ids.append(chat_id)
@@ -209,6 +222,7 @@ class WeatherMod(loader.Module):
         return
 
     async def listchatscmd(self, message) -> None:
+        """Переглянути список чатів для автоматичних оновлень погоди."""
         if self.weather_chat_ids:
             chats = "\n".join([f"• {chat_id}" for chat_id in self.weather_chat_ids])
             await utils.answer(message, self.strings["chats_list"].format(chats))
@@ -217,6 +231,7 @@ class WeatherMod(loader.Module):
         return
 
     async def setfrequencycmd(self, message) -> None:
+        """Встановити частоту оновлень погоди (в хвилинах)."""
         args = utils.get_args_raw(message)
         try:
             frequency = int(args)
@@ -230,6 +245,7 @@ class WeatherMod(loader.Module):
         return
 
     async def toggle_silentcmd(self, message) -> None:
+        """Увімкнути або вимкнути режим тиші (22:30 - 06:30)."""
         self.silent_mode = not self.silent_mode
         self.db.set(self.strings["name"], "silent_mode", self.silent_mode)
         if self.silent_mode:
@@ -239,6 +255,7 @@ class WeatherMod(loader.Module):
         return
 
     async def auto_weather_updates(self):
+        """Автоматичні оновлення погоди."""
         while True:
             if self.is_silent_period():
                 await asyncio.sleep(self.update_frequency * 60)
@@ -252,7 +269,7 @@ class WeatherMod(loader.Module):
 
             city = self.db.get(self.strings["name"], "city", "")
             if city and self.weather_chat_ids:
-                weather_info = await self.get_weather_info(city, api_key, 0) 
+                weather_info = await self.get_weather_info(city, api_key, 0)  
                 if weather_info:
                     await asyncio.gather(*(self.client.send_message(chat_id, self.strings["weather_info"].format(city, weather_info)) for chat_id in self.weather_chat_ids))
 

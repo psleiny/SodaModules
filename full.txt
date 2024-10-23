@@ -12,3 +12,4 @@ voicy
 weather
 afk_with_gif
 currency_converter
+activ_chat

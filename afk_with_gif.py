@@ -3,7 +3,7 @@
 import datetime
 import logging
 import time
-import aiohttp  
+import aiohttp  # Async HTTP requests for URL validation
 from telethon import types
 
 from .. import loader, utils
@@ -59,6 +59,7 @@ class AFKMod(loader.Module):
         """.afkmedia <URL медіа> - Встановити або замінити медіа для AFK через URL"""
         args = utils.get_args_raw(message)
 
+        # Validate URL and check for correct media type
         if not args or not await self.validate_media_url(args):
             await utils.answer(message, self.strings("media_not_found", message))
             return
@@ -131,7 +132,7 @@ class AFKMod(loader.Module):
 
         media = self._db.get(__name__, "afk_media")
         if media:
-            await message.reply(self.strings("afk_preview", message).format(ret), file=media)  
+            await message.reply(self.strings("afk_preview", message).format(ret), file=media)  # Надсилаємо медіа безпосередньо
         else:
             await utils.answer(message, self.strings("afk_preview", message).format(ret))
 
@@ -139,10 +140,11 @@ class AFKMod(loader.Module):
         return self._db.get(__name__, "afk", False)
 
     async def validate_media_url(self, url):
-        """Validates if the URL is valid and points to a media file."""
+        """Validates if the URL is valid, follows redirects, and points to a media file."""
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.head(url) as resp:
+                async with session.get(url, allow_redirects=True) as resp:
+                    # Follow redirects and check final content type
                     content_type = resp.headers.get("Content-Type", "").lower()
                     if resp.status == 200 and any(t in content_type for t in ["image/", "video/"]):
                         return True

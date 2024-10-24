@@ -1,9 +1,10 @@
 # meta developer: @lir1mod
 
+import os
 import datetime
 import logging
 import time
-import aiohttp  # Async HTTP requests for URL validation
+import aiohttp  # Async HTTP requests to download media
 from telethon import types
 
 from .. import loader, utils
@@ -26,6 +27,8 @@ class AFKMod(loader.Module):
         "invalid_media_type": "<b>Непідтримуваний тип медіа. Будь ласка, використовуйте GIF/PNG/JPG/MP4.</b>",
         "afk_preview": "<b>Ось як виглядатиме ваше повідомлення AFK:</b>\n\n{}",
     }
+
+    media_path = "afk_media.gif"  # File where media will be stored
 
     async def client_ready(self, client, db):
         self._db = db
@@ -59,18 +62,16 @@ class AFKMod(loader.Module):
         """.afkmedia <URL медіа> - Встановити або замінити медіа для AFK через URL"""
         args = utils.get_args_raw(message)
 
-        # Validate the URL and check if it's a valid media link
-        if not args or not await self.validate_media_url(args):
+        if not args or not await self.download_media(args):
             await utils.answer(message, self.strings("media_not_found", message))
             return
 
-        # Save the valid media URL
-        self._db.set(__name__, "afk_media", args)
         await utils.answer(message, self.strings("media_installed", message))
 
     async def removeafkmediacmd(self, message):
         """.removeafkmedia - Видалити поточний медіа URL для AFK"""
-        self._db.set(__name__, "afk_media", None)
+        if os.path.exists(self.media_path):
+            os.remove(self.media_path)
         await utils.answer(message, self.strings("media_removed", message))
 
     async def watcher(self, message):
@@ -109,9 +110,8 @@ class AFKMod(loader.Module):
             elif afk_state is not False:
                 ret = self.strings("afk_reason", message).format(diff, afk_state)
 
-            media = self._db.get(__name__, "afk_media")
-            if media:
-                await message.reply(ret, file=media) 
+            if os.path.exists(self.media_path):
+                await message.reply(ret, file=self.media_path)
             else:
                 await utils.answer(message, ret, reply_to=message)
 
@@ -131,26 +131,27 @@ class AFKMod(loader.Module):
         elif afk_state is not False:
             ret = self.strings("afk_reason", message).format(diff, afk_state)
 
-        media = self._db.get(__name__, "afk_media")
-        if media:
-            await message.reply(self.strings("afk_preview", message).format(ret), file=media)  # Надсилаємо медіа безпосередньо
+        if os.path.exists(self.media_path):
+            await message.reply(self.strings("afk_preview", message).format(ret), file=self.media_path)
         else:
             await utils.answer(message, self.strings("afk_preview", message).format(ret))
 
     def get_afk(self):
         return self._db.get(__name__, "afk", False)
 
-    async def validate_media_url(self, url):
-        """Validates if the URL is a valid media link by checking content type."""
+    async def download_media(self, url):
+        """Downloads media from the given URL and saves it locally."""
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.head(url, allow_redirects=True) as resp:
+                async with session.get(url) as resp:
+                    # Check if the URL points to a valid media file
                     content_type = resp.headers.get("Content-Type", "").lower()
-                    # Ensure the content type is image or video
                     if resp.status == 200 and any(t in content_type for t in ["image/", "video/"]):
+                        with open(self.media_path, 'wb') as f:
+                            f.write(await resp.read())
                         return True
                     else:
                         logger.error(f"Invalid media type for URL: {url}")
             except Exception as e:
-                logger.error(f"URL validation error: {e}")
+                logger.error(f"Error downloading media: {e}")
         return False

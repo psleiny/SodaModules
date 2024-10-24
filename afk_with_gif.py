@@ -1,8 +1,10 @@
 # meta developer: @lir1mod
 
+
 import datetime
 import logging
 import time
+import aiohttp  
 from telethon import types
 
 from .. import loader, utils
@@ -11,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 @loader.tds
 class AFKMod(loader.Module):
-    """Повідомляє інших, що ви перебуваєте в AFK і дозволяє додавати медіа через URL."""
+    """afk mode"""
 
     strings = {
         "name": "afk_with_gif",
@@ -21,7 +23,8 @@ class AFKMod(loader.Module):
         "afk_reason": "<b>Я зараз в AFK (з {} тому).\nПричина:</b> <i>{}</i>",
         "media_installed": "<b>Медіа AFK було встановлено!</b>",
         "media_removed": "<b>Медіа AFK було видалено.</b>",
-        "media_not_found": "<b>Невірний медіа URL для AFK.</b>",
+        "media_not_found": "<b>Невірний або недоступний медіа URL для AFK.</b>",
+        "invalid_media_type": "<b>Непідтримуваний тип медіа. Будь ласка, використовуйте GIF/PNG/JPG/MP4.</b>",
         "afk_preview": "<b>Ось як виглядатиме ваше повідомлення AFK:</b>\n\n{}",
     }
 
@@ -57,7 +60,7 @@ class AFKMod(loader.Module):
         """.afkmedia <URL медіа> - Встановити або замінити медіа для AFK через URL"""
         args = utils.get_args_raw(message)
 
-        if not args or not (args.startswith("http://") or args.startswith("https://")):
+        if not args or not await self.validate_media_url(args):
             await utils.answer(message, self.strings("media_not_found", message))
             return
 
@@ -129,9 +132,22 @@ class AFKMod(loader.Module):
 
         media = self._db.get(__name__, "afk_media")
         if media:
-            await message.reply(self.strings("afk_preview", message).format(ret), file=media)  # Надсилаємо медіа безпосередньо
+            await message.reply(self.strings("afk_preview", message).format(ret), file=media)  
         else:
             await utils.answer(message, self.strings("afk_preview", message).format(ret))
 
     def get_afk(self):
         return self._db.get(__name__, "afk", False)
+
+    async def validate_media_url(self, url):
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.head(url) as resp:
+                    content_type = resp.headers.get("Content-Type", "").lower()
+                    if resp.status == 200 and any(t in content_type for t in ["image/", "video/"]):
+                        return True
+                    else:
+                        await utils.answer(message, self.strings("invalid_media_type", message))
+            except Exception as e:
+                logger.error(f"URL validation error: {e}")
+        return False

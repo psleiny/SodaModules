@@ -1,6 +1,5 @@
 # meta developer: @lir1mod
 
-
 import datetime
 import logging
 import time
@@ -13,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @loader.tds
 class AFKMod(loader.Module):
-    """afk mode"""
+    """Повідомляє інших, що ви перебуваєте в AFK і дозволяє додавати медіа через URL або файл."""
 
     strings = {
         "name": "afk_with_gif",
@@ -140,6 +139,7 @@ class AFKMod(loader.Module):
         return self._db.get(__name__, "afk", False)
 
     async def validate_media_url(self, url):
+        """Validates if the URL is valid and points to a media file."""
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.head(url) as resp:
@@ -147,7 +147,7 @@ class AFKMod(loader.Module):
                     if resp.status == 200 and any(t in content_type for t in ["image/", "video/"]):
                         return True
                     else:
-                        await utils.answer(message, self.strings("invalid_media_type", message))
+                        logger.error(f"Invalid media type for URL: {url}")
             except Exception as e:
                 logger.error(f"URL validation error: {e}")
         return False

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 @loader.tds
 class AFKMod(loader.Module):
-    """Повідомляє інших, що ви перебуваєте в AFK і дозволяє додавати медіа через URL або файл."""
+    """Повідомляє інших, що ви перебуваєте в AFK і дозволяє додавати медіа через URL."""
 
     strings = {
         "name": "afk_with_gif",
@@ -59,11 +59,12 @@ class AFKMod(loader.Module):
         """.afkmedia <URL медіа> - Встановити або замінити медіа для AFK через URL"""
         args = utils.get_args_raw(message)
 
-        # Validate URL and check for correct media type
+        # Validate the URL and check if it's a valid media link
         if not args or not await self.validate_media_url(args):
             await utils.answer(message, self.strings("media_not_found", message))
             return
 
+        # Save the valid media URL
         self._db.set(__name__, "afk_media", args)
         await utils.answer(message, self.strings("media_installed", message))
 
@@ -140,12 +141,12 @@ class AFKMod(loader.Module):
         return self._db.get(__name__, "afk", False)
 
     async def validate_media_url(self, url):
-        """Validates if the URL is valid, follows redirects, and points to a media file."""
+        """Validates if the URL is a valid media link by checking content type."""
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(url, allow_redirects=True) as resp:
-                    # Follow redirects and check final content type
+                async with session.head(url, allow_redirects=True) as resp:
                     content_type = resp.headers.get("Content-Type", "").lower()
+                    # Ensure the content type is image or video
                     if resp.status == 200 and any(t in content_type for t in ["image/", "video/"]):
                         return True
                     else:

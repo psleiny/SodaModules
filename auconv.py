@@ -1,4 +1,13 @@
+# ---------------------------------------------------------------------------------
+# Name: AuConv
+# Description: Конвертування аудіо файлів у різні формати
+# Author: @SodaModules
+# ---------------------------------------------------------------------------------
 # meta developer: @SodaModules
+# scope: AuConv
+# scope: AuConv 1.0.1
+# requires: pydub.py
+# ---------------------------------------------------------------------------------
 
 from pydub import AudioSegment
 from .. import loader, utils
